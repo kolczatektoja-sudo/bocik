@@ -15408,7 +15408,24 @@ async function openRegulationPanelViewer(
   pageIndex = 0,
   useUpdate = false,
 ) {
-  const state = getRegulationPanelStateByMessageId(panelMessageId);
+  let state = getRegulationPanelStateByMessageId(panelMessageId);
+
+  // Fallback: stan panelu zginal (np. po nadpisaniu bot_state starsza wersja bota).
+  // Odtwarzamy panel z domyslnego regulaminu i zapisujemy go ponownie.
+  if (!state && panelMessageId) {
+    state = cloneRegulationPanelState(
+      { persistPanel: true },
+      {
+        messageId: panelMessageId,
+        channelId: interaction.channelId || null,
+        guildId: interaction.guildId || null,
+        persistPanel: true,
+      },
+    );
+    regulationPanels.set(panelMessageId, state);
+    scheduleSavePersistentState(true);
+    console.warn(`[regulamin] Brak stanu panelu ${panelMessageId} - odtworzono z domyslnego regulaminu`);
+  }
 
   if (!state) {
     const payload = {
