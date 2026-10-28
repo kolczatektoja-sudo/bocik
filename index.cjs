@@ -14042,7 +14042,7 @@ function cloneRegulationPanelState(state, overrides = {}) {
     variant: "regulamin",
     persistPanel: !!state?.persistPanel,
     accentColorKey: colorKey,
-    accentColor: Number(state?.accentColor || colorDef.color),
+    accentColor: COLOR_BLUE,
     headerBadge: String(state?.headerBadge || "📜"),
     headerNote: String(
       state?.headerNote ||
@@ -14154,9 +14154,7 @@ function buildRegulationPanelMessagePayload(state, skipFooter = false) {
     headingParts.push(replaceNamedGuildEmojis(state.title, state.guildId));
   }
 
-  const container = new ContainerBuilder().setAccentColor(
-    state.accentColor || COLOR_BLUE,
-  );
+  const container = new ContainerBuilder().setAccentColor(COLOR_BLUE);
 
   if (headingParts.length) {
     container.addTextDisplayComponents(
@@ -14256,9 +14254,7 @@ function buildRegulationViewerPayload(state, panelMessageId, pageIndex = 0) {
     page.body || "-# Ta strona regulaminu jest pusta.",
     state.guildId,
   ).trim();
-  const container = new ContainerBuilder().setAccentColor(
-    state.accentColor || COLOR_BLUE,
-  );
+  const container = new ContainerBuilder().setAccentColor(COLOR_BLUE);
 
   if (pageTitle) {
     container.addTextDisplayComponents(

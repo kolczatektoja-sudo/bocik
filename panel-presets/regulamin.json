@@ -1,0 +1,44 @@
+{
+  "format": "newshop-panel",
+  "version": 1,
+  "name": "Regulamin",
+  "exportedAt": "2026-10-28T21:45:00.000Z",
+  "source": {
+    "guildId": "1350446732365926491",
+    "channelId": "1495151202915324126",
+    "messageId": "1519091853704564878"
+  },
+  "state": {
+    "accentColorKey": "blue",
+    "accentColor": 43775,
+    "headerBadge": "📜",
+    "headerNote": "• Kliknij **przycisk poniżej**, aby wyświetlić regulamin.",
+    "title": "NEW SHOP × REGULAMIN",
+    "pages": [
+      {
+        "title": "> # 1. __Postanowienia ogólne__ 📜",
+        "body": "> :strzałka: Korzystanie z naszych usług oznacza **akceptację zasad** obowiązujących na serwerze.\n> :strzałka: Zakupy dotyczą m.in. serwerów takich jak: **Anarchia, DonutSMP, PvkMC** oraz innych wskazanych przez administrację.\n> :strzałka: Administracja zastrzega sobie prawo do **zmiany regulaminu** w każdym momencie.\n> :strzałka: **Nieznajomość zasad** nie zwalnia z ich przestrzegania."
+      },
+      {
+        "title": "> # 2. __Transakcje__ 🛒",
+        "body": "> :strzałka: Obsługujemy płatności przez **BLIK, Paysafecard, PayPal, Revolut oraz krypto**.\n> :strzałka: Każdą wpłatę wykonuj **dokładnie według wskazówek administracji**, inaczej może nie zostać zaliczona.\n> :strzałka: Wykrycie środków z **nielegalnego pochodzenia** skutkuje **cofnięciem transakcji** i **blokadą konta**."
+      },
+      {
+        "title": "> # 3. Zachowanie użytkownika 👤",
+        "body": "> :strzałka: Próby **oszustwa**, wprowadzania w błąd lub **brak szacunku wobec administracji** mogą skutkować **odmową realizacji transakcji** oraz **blokadą konta**.\n> :strzałka: W takich przypadkach administracja może **zatrzymać środki** oraz **ukarać użytkownika**."
+      },
+      {
+        "title": "> # 4. Zwroty :kasa_3:",
+        "body": "> :strzałka: Po dokonaniu zakupu **środki nie podlegają zwrotowi**."
+      },
+      {
+        "title": "> # 5. Wymogi nagród za zaproszenia :gift:",
+        "body": "> :strzałka: **Multikonta, konta AFK oraz puste profile** nie są zaliczane każde zaproszenie jest **weryfikowane**.\n> :strzałka: **Zaproszona osoba musi być zweryfikowana** (posiadać rangę **Klient**).\n> :strzałka: Zaproszona osoba musi przebywać na serwerze **minimum 24h** oraz mieć konto discord **co najmniej 2 miesiące**.\n> :strzałka: **Zakaz oszustw, spamu i sztucznego nabijania** grozi **brakiem nagrody lub banem**."
+      }
+    ],
+    "buttonOneLabel": "Zobacz regulamin",
+    "buttonOneEmoji": "📜",
+    "buttonOneAction": "regulamin",
+    "buttonOneUrl": ""
+  }
+}
