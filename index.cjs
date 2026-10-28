@@ -14032,7 +14032,7 @@ function setRegulationPagesOnState(state, pages) {
 }
 
 function cloneRegulationPanelState(state, overrides = {}) {
-  const colorKey = state?.accentColorKey || "yellow";
+  const colorKey = state?.accentColorKey || "blue";
   const colorDef = getEmbedTestColorDef(colorKey);
   const cloned = {
     ownerId: state?.ownerId || null,
@@ -15414,7 +15414,7 @@ async function openRegulationPanelViewer(
   // Odtwarzamy panel z domyslnego regulaminu i zapisujemy go ponownie.
   if (!state && panelMessageId) {
     state = cloneRegulationPanelState(
-      { persistPanel: true },
+      { persistPanel: true, accentColorKey: "blue", accentColor: COLOR_BLUE },
       {
         messageId: panelMessageId,
         channelId: interaction.channelId || null,
