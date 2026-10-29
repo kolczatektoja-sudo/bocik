@@ -1519,12 +1519,95 @@ function scheduleDailyLegitMidnightRollover() {
   }, millisecondsUntilNextWarsawDay());
 }
 
+function parseDailyLegitMessage(msg) {
+  const raw = JSON.stringify(msg);
+  if (!raw.includes("DZIENNE LC")) return null;
+  const date = raw.match(/Data:[^`]*`(\d{2})\.(\d{2})\.(\d{4})`/);
+  const total = raw.match(/Wystawione legit checki:[^`]*`(\d+)`/);
+  const pln = raw.match(/Łączna wydana kwota:[^`]*`([\d.,]+)\s*PLN`/);
+  if (!date || !total) return null;
+  return {
+    dateKey: `${date[3]}-${date[2]}-${date[1]}`,
+    total: parseInt(total[1], 10) || 0,
+    totalPln: pln ? parseFloat(pln[1].replace(",", ".")) || 0 : 0,
+    createdTimestamp: msg.createdTimestamp,
+    messageId: msg.id,
+  };
+}
+
+// Po resecie bota licznik i rekordy mogą zniknąć ze stanu — odtwarzamy je z podsumowań
+// zapisanych na kanale (dla każdego dnia bierzemy największe wartości).
+async function restoreDailyLegitFromChannel(channel) {
+  if (!channel?.isTextBased?.()) return;
+  const byDate = new Map();
+  let before = null;
+  for (let page = 0; page < 10; page++) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    if (batch.size === 0) break;
+    for (const msg of batch.values()) {
+      if (msg.author?.id !== client.user?.id) continue;
+      const parsed = parseDailyLegitMessage(msg);
+      if (!parsed) continue;
+      const current = byDate.get(parsed.dateKey);
+      if (!current) {
+        byDate.set(parsed.dateKey, parsed);
+        continue;
+      }
+      current.total = Math.max(current.total, parsed.total);
+      current.totalPln = Math.max(current.totalPln, parsed.totalPln);
+      if (parsed.createdTimestamp > current.createdTimestamp) {
+        current.createdTimestamp = parsed.createdTimestamp;
+        current.messageId = parsed.messageId;
+      }
+    }
+    before = batch.last().id;
+    if (batch.size < 100) break;
+  }
+
+  let changed = false;
+  for (const entry of byDate.values()) {
+    if (entry.dateKey === dailyLegitStats.dateKey) {
+      if (entry.total > dailyLegitStats.total) {
+        const hour = getWarsawDateParts(new Date(entry.createdTimestamp)).hour;
+        dailyLegitStats.hourly[hour] += entry.total - dailyLegitStats.total;
+        dailyLegitStats.total = entry.total;
+        changed = true;
+      }
+      if (entry.totalPln > dailyLegitStats.totalPln) {
+        dailyLegitStats.totalPln = entry.totalPln;
+        changed = true;
+      }
+      if (!dailyLegitStats.messageId) {
+        dailyLegitStats.messageId = entry.messageId;
+        changed = true;
+      }
+      continue;
+    }
+    const existing = dailyLegitRecords[entry.dateKey];
+    if (!existing || existing.total < entry.total || existing.totalPln < entry.totalPln) {
+      dailyLegitRecords[entry.dateKey] = {
+        dateKey: entry.dateKey,
+        total: Math.max(existing?.total || 0, entry.total),
+        totalPln: Math.max(existing?.totalPln || 0, entry.totalPln),
+      };
+      changed = true;
+    }
+  }
+  if (changed) {
+    scheduleSavePersistentState(true);
+    console.log(`[daily-legit] Odtworzono dane z kanału: dziś ${dailyLegitStats.total} LC, ${Object.keys(dailyLegitRecords).length} dni w rekordach`);
+  }
+}
+
 async function initializeDailyLegitChart() {
   const channel = await client.channels.fetch(DAILY_LEGIT_CHANNEL_ID).catch(() => null);
+  const changed = rollDailyLegitStatsIfNeeded();
   if (channel?.isTextBased?.()) {
+    await restoreDailyLegitFromChannel(channel).catch((error) =>
+      console.error("[daily-legit] Błąd odtwarzania danych z kanału:", error),
+    );
     await removeRecordButtonsFromOldDailyLegitMessages(channel, dailyLegitStats.messageId).catch(() => null);
   }
-  const changed = rollDailyLegitStatsIfNeeded();
   await queueDailyLegitChartPublish({
     forceNew: changed,
     forceChannelRename: changed,
@@ -2829,7 +2912,13 @@ function buildPersistentStateData() {
 }
 
 // Funkcje do obsługi Supabase
+let supabaseStateReadFailed = false;
+
 async function saveStateToSupabase(data) {
+  if (supabaseStateReadFailed) {
+    console.warn('[supabase] Pomijam zapis: stan nie został wczytany po starcie');
+    return false;
+  }
   try {
     const { error } = await supabase
       .from('bot_state')
@@ -4260,28 +4349,37 @@ async function handleWezwijCommand(interaction) {
 }
 
 async function loadStateFromSupabase() {
-  try {
-    const { data, error } = await supabase
-      .from('bot_state')
-      .select('data')
-      .eq('id', 1)
-      .single();
+  // Nieudany odczyt NIE może skończyć się zapisem pustego stanu (kasowałoby rekordy),
+  // dlatego próbujemy kilka razy, a przy porażce blokujemy zapis do Supabase.
+  const attempts = 4;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const { data, error } = await supabase
+        .from('bot_state')
+        .select('data')
+        .eq('id', 1)
+        .single();
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        console.log('[supabase] Nie znaleziono stanu, tworzę nowy');
-        return null;
+      if (error) {
+        if (error.code === 'PGRST116') {
+          console.log('[supabase] Nie znaleziono stanu, tworzę nowy');
+          supabaseStateReadFailed = false;
+          return null;
+        }
+        throw error;
       }
-      console.error('[supabase] Błąd odczytu:', error);
-      return null;
-    }
 
-    console.log('[supabase] Stan wczytany pomyślnie');
-    return data.data;
-  } catch (error) {
-    console.error('[supabase] Błąd podczas odczytu:', error);
-    return null;
+      console.log('[supabase] Stan wczytany pomyślnie');
+      supabaseStateReadFailed = false;
+      return data.data;
+    } catch (error) {
+      console.error(`[supabase] Błąd odczytu (próba ${attempt}/${attempts}):`, error);
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+    }
   }
+  supabaseStateReadFailed = true;
+  console.error('[supabase] Nie udało się wczytać stanu — zapis do Supabase wstrzymany, żeby nie nadpisać danych pustym stanem');
+  return null;
 }
 
 function flushPersistentStateSync() {
