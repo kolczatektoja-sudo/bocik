@@ -1540,14 +1540,17 @@ function parseDailyLegitMessage(msg) {
 async function restoreDailyLegitFromChannel(channel) {
   if (!channel?.isTextBased?.()) return;
   const byDate = new Map();
+  let scannedSummaries = 0;
   let before = null;
   for (let page = 0; page < 10; page++) {
     const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
     if (batch.size === 0) break;
     for (const msg of batch.values()) {
-      if (msg.author?.id !== client.user?.id) continue;
+      // Podsumowania mogła wysłać wcześniejsza instancja bota — liczy się format, nie ID autora.
+      if (!msg.author?.bot) continue;
       const parsed = parseDailyLegitMessage(msg);
       if (!parsed) continue;
+      scannedSummaries++;
       const current = byDate.get(parsed.dateKey);
       if (!current) {
         byDate.set(parsed.dateKey, parsed);
@@ -1593,6 +1596,7 @@ async function restoreDailyLegitFromChannel(channel) {
       changed = true;
     }
   }
+  console.log(`[daily-legit] Przeskanowano kanał: ${scannedSummaries} podsumowań z ${byDate.size} dni`);
   if (changed) {
     scheduleSavePersistentState(true);
     console.log(`[daily-legit] Odtworzono dane z kanału: dziś ${dailyLegitStats.total} LC, ${Object.keys(dailyLegitRecords).length} dni w rekordach`);
@@ -8791,6 +8795,12 @@ async function handleButtonInteraction(interaction) {
   }
 
   if (customId === "daily_legit_record") {
+    // Rekordy liczymy z aktualnej historii kanału, a nie tylko ze stanu po starcie.
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+    const dailyChannel = await client.channels.fetch(DAILY_LEGIT_CHANNEL_ID).catch(() => null);
+    await restoreDailyLegitFromChannel(dailyChannel).catch((error) =>
+      console.error("[daily-legit] Błąd odświeżania rekordów z kanału:", error),
+    );
     const records = {
       ...dailyLegitRecords,
       [dailyLegitStats.dateKey]: {
@@ -8829,9 +8839,9 @@ async function handleButtonInteraction(interaction) {
       ),
     );
     appendBrandFooterToContainer(recordContainer, interaction.guildId);
-    await interaction.reply({
+    await interaction.editReply({
       components: [recordContainer],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
+      flags: MessageFlags.IsComponentsV2,
     });
     return;
   }
