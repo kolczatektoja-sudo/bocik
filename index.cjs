@@ -2470,6 +2470,66 @@ const ticketDelivery = createTicketDelivery({
     return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
   },
 });
+const { createShopSettingsStore, SHOP_SETTINGS_ROW_ID } = require("./shop-settings.cjs");
+const shopSettingsStore = createShopSettingsStore({
+  load: async () => {
+    const { data, error } = await supabase.from('bot_state').select('data').eq('id', SHOP_SETTINGS_ROW_ID).single();
+    if (error && error.code !== 'PGRST116') throw error;
+    return data?.data || null;
+  },
+  save: async data => {
+    const { error } = await supabase.from('bot_state').upsert({ id: SHOP_SETTINGS_ROW_ID, data, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    if (error) throw error;
+  },
+});
+
+function currentShopSettings() {
+  return {
+    calculatorRates: {
+      anarchiaLifestealRate: ANARCHIA_LIFESTEAL_RATE,
+      anarchiaLifestealBulkRate: ANARCHIA_LIFESTEAL_BULK_RATE,
+      anarchiaLifestealBulkThresholdPln: ANARCHIA_LIFESTEAL_BULK_THRESHOLD_PLN,
+      anarchiaBoxpvpRate: ANARCHIA_BOXPVP_RATE,
+      minestarLfRate: MINESTAR_LF_RATE,
+      minestarLfBulkRate: MINESTAR_LF_BULK_RATE,
+      minestarLfBulkThresholdPln: MINESTAR_LF_BULK_THRESHOLD_PLN,
+      donutSmpRate: DONUT_SMP_RATE,
+      minestarSkypvpRate: MINESTAR_SKY_RATE,
+    },
+    inviteRewardMilestones: INVITE_REWARD_MILESTONES,
+  };
+}
+
+function applyShopSettings(settings) {
+  const rates = settings.calculatorRates;
+  if (rates.anarchiaLifestealRate) ANARCHIA_LIFESTEAL_RATE = rates.anarchiaLifestealRate;
+  if (rates.anarchiaLifestealBulkRate) ANARCHIA_LIFESTEAL_BULK_RATE = rates.anarchiaLifestealBulkRate;
+  if (rates.anarchiaLifestealBulkThresholdPln) ANARCHIA_LIFESTEAL_BULK_THRESHOLD_PLN = rates.anarchiaLifestealBulkThresholdPln;
+  if (rates.anarchiaBoxpvpRate) ANARCHIA_BOXPVP_RATE = rates.anarchiaBoxpvpRate;
+  if (rates.minestarLfRate) MINESTAR_LF_RATE = rates.minestarLfRate;
+  if (rates.minestarLfBulkRate) MINESTAR_LF_BULK_RATE = rates.minestarLfBulkRate;
+  if (rates.minestarLfBulkThresholdPln) MINESTAR_LF_BULK_THRESHOLD_PLN = rates.minestarLfBulkThresholdPln;
+  if (rates.donutSmpRate) DONUT_SMP_RATE = rates.donutSmpRate;
+  if (rates.minestarSkypvpRate) MINESTAR_SKY_RATE = rates.minestarSkypvpRate;
+  if (settings.inviteRewardMilestones.length > 0) {
+    INVITE_REWARD_MILESTONES = settings.inviteRewardMilestones;
+    syncInviteRewardThresholds();
+  }
+}
+
+/** Zapis /cennik i nagród za zaproszenia od razu do Supabase; zwraca, czy zapis się udał. */
+async function persistShopSettings(reason) {
+  try {
+    await shopSettingsStore.save(currentShopSettings());
+    scheduleSavePersistentState(true);
+    console.log(`[shop-settings] Zapisano w Supabase (${reason})`);
+    return true;
+  } catch (error) {
+    console.error(`[shop-settings] Błąd zapisu w Supabase (${reason}):`, error);
+    return false;
+  }
+}
+
 client.on(Events.MessageCreate, message => {
   ticketDelivery.onMessage(message).catch(error => console.error('[ile-brakuje] Przesunięcie panelu:', error));
 });
@@ -2917,8 +2977,16 @@ function buildPersistentStateData() {
 
 // Funkcje do obsługi Supabase
 let supabaseStateReadFailed = false;
+// Zapis przed zakończeniem odczytu wysłałby do Supabase wartości domyślne (np. cennik, rekordy).
+let persistentStateLoaded = false;
+let saveSkippedBeforeLoad = false;
 
 async function saveStateToSupabase(data) {
+  if (!persistentStateLoaded) {
+    saveSkippedBeforeLoad = true;
+    console.warn('[supabase] Pomijam zapis: stan nie został jeszcze wczytany po starcie');
+    return false;
+  }
   if (supabaseStateReadFailed) {
     console.warn('[supabase] Pomijam zapis: stan nie został wczytany po starcie');
     return false;
@@ -5278,10 +5346,27 @@ function getNextTicketNumber(guildId) {
 
 // Load persisted state once on startup (IMMEDIATELY after maps are defined)
 console.log("[state] Wywołuję loadPersistentState()...");
-const persistentStateReady = loadPersistentState().then(() => {
+const persistentStateReady = loadPersistentState().then(async () => {
+  // Osobny wiersz ustawień sklepu ma pierwszeństwo przed dużym stanem bota.
+  try {
+    const shopSettings = await shopSettingsStore.load();
+    const hasStored = Object.keys(shopSettings.calculatorRates).length > 0
+      || shopSettings.inviteRewardMilestones.length > 0;
+    if (hasStored) {
+      applyShopSettings(shopSettings);
+      console.log("[shop-settings] Wczytano cennik i nagrody za zaproszenia z Supabase");
+    } else if (!supabaseStateReadFailed) {
+      await persistShopSettings("pierwszy zapis po migracji");
+    }
+  } catch (error) {
+    console.error("[shop-settings] Błąd wczytywania z Supabase:", error);
+  }
   console.log("[state] loadPersistentState() zakończone");
 }).catch(err => {
   console.error("[state] Błąd loadPersistentState():", err);
+}).finally(() => {
+  persistentStateLoaded = true;
+  if (saveSkippedBeforeLoad) scheduleSavePersistentState(true);
 });
 
 // Save pending shop data and await lifecycle logging before leaving the process.
@@ -19914,15 +19999,16 @@ async function handleSprawdzBonusyButton(interaction) {
     }
 
     const descContent = [
-      "```",
-      "💵 New Shop × TWOJE BONUSY",
-      "```",
       `> ${line1}`,
       `> ${line2}`,
       `> ${line3}`,
     ].join("\n");
 
     const container = new ContainerBuilder().setAccentColor(COLOR_BLUE);
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("```\n💵 New Shop × TWOJE BONUSY\n```")
+    );
+    container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
     container.addTextDisplayComponents(
       new TextDisplayBuilder().setContent(descContent)
     );
@@ -20228,8 +20314,7 @@ async function handleCennikCommand(interaction) {
     const newRate = stawka;
     entry.set(newRate);
 
-    // Persist immediately
-    scheduleSavePersistentState(true);
+    const savedToDatabase = await persistShopSettings(`/cennik ${serwer}`);
 
     // ── Refresh all active cennik embeds ─────────────────
     let updatedPanels = 0;
@@ -20267,6 +20352,9 @@ async function handleCennikCommand(interaction) {
       `> Stara stawka: \`${formatRateShort(oldRate)}\``,
       `> Nowa stawka: \`${formatRateShort(newRate)}\``,
       updatedPanels > 0 ? `> Zaktualizowano **${updatedPanels}** panel(i) na Discord.` : `> Brak aktywnych paneli do zaktualizowania.`,
+      savedToDatabase
+        ? "> `💾` × Zapisano w bazie — stawka zostanie po restarcie bota."
+        : "> `⚠️` × Nie udało się zapisać w bazie — po restarcie wróci stara stawka. Spróbuj ponownie.",
     ].join("\n");
 
     await interaction.editReply({ content: reply });
@@ -21052,7 +21140,7 @@ async function ticketClaimCommon(interaction, channelId, opts = {}) {
       .setDescription(
         `> \`✅\` × Ticket został przejęty przez: ${publicClaimerLabel}\n` +
         (sellerCount === null
-          ? "> <a:card:1537186328867770488> × Statystyki sprzedawcy: aktualizowanie…"
+          ? "> <a:card:1537186328867770488> × Wykonał on łącznie: *trwa liczenie ticketów…*"
           : `> <a:card:1537186328867770488> × Wykonał on łącznie: __**${sellerCount}**__ ${formatTicketsPlural(sellerCount)}`)
       );
 
@@ -26289,12 +26377,15 @@ async function handleZaprosieniaStatsCommand(interaction) {
     milestone.label = `${Math.round(kwota / 1000)}k$`;
 
     syncInviteRewardThresholds();
-    scheduleSavePersistentState(true);
+    const savedToDatabase = await persistShopSettings(`/zaproszenia-edytuj prog ${prog}`);
 
     await respond({
       content: `> \`✅\` × Pomyślnie zmieniono kwotę nagrody za próg **${prog}** zaproszeń:\n` +
                `> \`💵\` × Stara kwota: **${formatRewardCashAmount(oldAmount)}**\n` +
-               `> \`💰\` × Nowa kwota: **${formatRewardCashAmount(kwota)}** (wyświetlana jako \`${milestone.label}\`)`,
+               `> \`💰\` × Nowa kwota: **${formatRewardCashAmount(kwota)}** (wyświetlana jako \`${milestone.label}\`)\n` +
+               (savedToDatabase
+                 ? "> `💾` × Zapisano w bazie — nagroda zostanie po restarcie bota."
+                 : "> `⚠️` × Nie udało się zapisać w bazie — po restarcie wróci stara kwota. Spróbuj ponownie."),
       flags: [MessageFlags.Ephemeral],
     });
     return;

@@ -35,7 +35,7 @@ test('claim publishes immediately without fetching history when stats are unveri
   await f.context.publishClaim();
   assert.equal(f.owners.get('channel').lastClaimMsgId, 'claim');
   assert.match(f.sent[0].embeds[0].description, /Ticket został przejęty/);
-  assert.match(f.sent[0].embeds[0].description, /aktualizowanie/);
+  assert.match(f.sent[0].embeds[0].description, /trwa liczenie ticketów/);
   assert.equal(f.scans(), 0);
 });
 
