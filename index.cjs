@@ -2451,6 +2451,7 @@ const supabaseUrl = process.env.SUPABASE_URL || 'https://your-project.supabase.c
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'your-anon-key';
 const supabase = createClient(supabaseUrl, supabaseKey);
 const { createTicketDelivery, deliverySummary } = require("./ticket-delivery.cjs");
+const { helperMayViewTicket } = require("./ticket-access.cjs");
 const ticketDelivery = createTicketDelivery({
   load: async () => {
     const { data, error } = await supabase.from('bot_state').select('data').eq('id', 3).single();
@@ -21103,7 +21104,7 @@ async function ticketClaimCommon(interaction, channelId, opts = {}) {
     }
 
     const helperRoleId = "1519069239254974475";
-    if (ticketData && ticketData.ticketTypeLabel === "PYTANIE") {
+    if (ticketData && helperMayViewTicket({ label: ticketData.ticketTypeLabel })) {
       permissionOverwrites.push({
         id: helperRoleId,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
@@ -21421,6 +21422,10 @@ async function ticketUnclaimCommon(interaction, channelId, expectedClaimer = nul
           { id: interaction.guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
           ...limitOverwrites,
         ];
+        const helperSeesTicket = helperMayViewTicket({
+          ticketType: configuredTicketType,
+          label: ticketData.ticketTypeLabel,
+        });
         if (isHelpTicket) {
           // Oprócz rang limitów zablokuj też bazową rangę sprzedawcy.
           overwritesToSet.push({ id: BASE_SELLER_ROLE_ID, deny: [PermissionsBitField.Flags.ViewChannel] });
@@ -21428,6 +21433,9 @@ async function ticketUnclaimCommon(interaction, channelId, expectedClaimer = nul
           if (interaction.guild.ownerId) {
             overwritesToSet.push({ id: interaction.guild.ownerId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] });
           }
+        } else if (helperSeesTicket) {
+          // Ticket z nagrodą: helper ma dostęp, sprzedawcy też (nie jest to prywatne pytanie).
+          overwritesToSet.push({ id: "1519069239254974475", allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] });
         } else {
           overwritesToSet.push({ id: "1519069239254974475", deny: [PermissionsBitField.Flags.ViewChannel] });
         }
@@ -21758,7 +21766,11 @@ async function openRewardClaimTicket(interaction) {
       },
       {
         id: "1519069239254974475",
-        deny: [PermissionsBitField.Flags.ViewChannel],
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory,
+        ],
       },
     ],
   };
@@ -23816,7 +23828,11 @@ async function handleModalSubmit(interaction) {
             },
             {
               id: "1519069239254974475",
-              deny: [PermissionsBitField.Flags.ViewChannel],
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+              ],
             },
           ],
         };
@@ -24056,7 +24072,7 @@ async function handleModalSubmit(interaction) {
     };
 
     const helperRoleId = "1519069239254974475";
-    if (ticketType === "inne") {
+    if (helperMayViewTicket({ ticketType })) {
       createOptions.permissionOverwrites.push({
         id: helperRoleId,
         allow: [
