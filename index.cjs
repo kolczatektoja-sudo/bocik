@@ -2804,6 +2804,7 @@ function buildPersistentStateData() {
     globalCommissionRate: typeof globalCommissionRate === "number" ? globalCommissionRate : 0.10,
     sellerCommissionRates: Object.fromEntries(sellerCommissionRates),
     isSundayResetTriggered: Boolean(isSundayResetTriggered),
+    nextWeekSales: Object.fromEntries(nextWeekSales),
     rozliczeniaReportMessageId: rozliczeniaReportMessageId || null,
     sellerWarnMessages: Object.fromEntries(sellerWarnMessages),
     ownerInviteCountingSettings: Object.fromEntries(ownerInviteCountingSettings),
@@ -4990,6 +4991,18 @@ async function loadPersistentState() {
       }
       if (typeof botStateData.isSundayResetTriggered === "boolean") {
         isSundayResetTriggered = botStateData.isSundayResetTriggered;
+      }
+      if (botStateData.nextWeekSales && typeof botStateData.nextWeekSales === "object") {
+        for (const [userId, saleData] of Object.entries(botStateData.nextWeekSales)) {
+          if (!saleData || typeof saleData !== "object") continue;
+          nextWeekSales.set(userId, {
+            amount: Number(saleData.amount || 0),
+            lastUpdate: Number(saleData.lastUpdate || Date.now()),
+            paid: false,
+            paidAt: null,
+            guildId: saleData.guildId || null,
+          });
+        }
       }
       if (botStateData.rozliczeniaReportMessageId) {
         rozliczeniaReportMessageId = botStateData.rozliczeniaReportMessageId;
@@ -7677,31 +7690,7 @@ async function handleModalSubmit(interaction) {
     }
 
     const userId = interaction.user.id;
-    if (!weeklySales.has(userId)) {
-      weeklySales.set(userId, {
-        amount: 0,
-        lastUpdate: Date.now(),
-        paid: false,
-        paidAt: null,
-        guildId: interaction.guild.id,
-      });
-    }
-
-    const userData = weeklySales.get(userId);
-    userData.amount += kwota;
-    userData.lastUpdate = Date.now();
-    userData.guildId = interaction.guild.id;
-    weeklySales.set(userId, userData);
-
-    await db.saveWeeklySale(
-      userId,
-      userData.amount,
-      interaction.guild.id,
-      userData.paid || false,
-      userData.paidAt || null,
-      userData.lastUpdate,
-    );
-    scheduleSavePersistentState(true);
+    const { userData } = await addSaleToSettlement(userId, kwota, interaction.guild.id);
 
     const prowizja = (userData.amount * ROZLICZENIA_PROWIZJA).toFixed(2);
 
@@ -10247,37 +10236,7 @@ async function handleRozliczenieCommand(interaction) {
   const kwota = interaction.options.getInteger("kwota");
   const userId = interaction.user.id;
 
-  if (!weeklySales.has(userId)) {
-    weeklySales.set(userId, {
-      amount: 0,
-      lastUpdate: Date.now(),
-      paid: false,
-      paidAt: null,
-      guildId: interaction.guild.id,
-    });
-  }
-
-  const userData = weeklySales.get(userId);
-  if (userData.paid) {
-    userData.amount = 0;
-    userData.paid = false;
-    userData.paidAt = null;
-  }
-  userData.amount += kwota;
-  userData.lastUpdate = Date.now();
-  userData.guildId = interaction.guild.id;
-  weeklySales.set(userId, userData);
-
-  // Zapisz weekly sales do Supabase
-  await db.saveWeeklySale(
-    userId,
-    userData.amount,
-    interaction.guild.id,
-    userData.paid || false,
-    userData.paidAt || null,
-    userData.lastUpdate,
-  );
-  scheduleSavePersistentState(true);
+  const { userData } = await addSaleToSettlement(userId, kwota, interaction.guild.id);
   console.log(`[rozliczenie] Użytkownik ${userId} dodał rozliczenie: ${kwota} zł, suma tygodniowa: ${userData.amount} zł`);
 
   const klientEmojiCmd = findGuildEmojiByName(interaction.guildId, "klient");
@@ -10305,6 +10264,62 @@ async function handleRozliczenieCommand(interaction) {
 // Pomocnicze funkcje do cyklu rozliczeń
 let rozliczeniaReportMessageId = null;
 let isSundayResetTriggered = false;
+// Sprzedaże dodane po odcięciu niedzielnym (00:00) – należą do rozliczenia następnego tygodnia
+let nextWeekSales = new Map();
+
+function isSettlementCutActive() {
+  const { dayOfWeek } = getPolandTime();
+  return dayOfWeek === 0 || isSundayResetTriggered;
+}
+
+// Przenosi sprzedaże następnego tygodnia do aktualnego rozliczenia, gdy poprzednie są już opłacone
+async function rolloverSettlementCycle() {
+  const { dayOfWeek } = getPolandTime();
+  if (dayOfWeek === 0) return false;
+  const hasUnpaidDue = Array.from(weeklySales.values()).some((data) => data.amount > 0 && !data.paid);
+  if (hasUnpaidDue) return false;
+  if (weeklySales.size === 0 && nextWeekSales.size === 0 && !isSundayResetTriggered) return false;
+
+  weeklySales.clear();
+  for (const [userId, data] of nextWeekSales) {
+    weeklySales.set(userId, data);
+    await db.saveWeeklySale(userId, data.amount, data.guildId || "default", false, null, data.lastUpdate).catch(() => null);
+  }
+  nextWeekSales.clear();
+  isSundayResetTriggered = false;
+  scheduleSavePersistentState(true);
+  console.log("[rozliczenia] Przeniesiono sprzedaże następnego tygodnia do aktualnego rozliczenia.");
+  return true;
+}
+
+// Dodaje sprzedaż do właściwego rozliczenia (aktualnego albo następnego tygodnia)
+async function addSaleToSettlement(userId, kwota, guildId) {
+  await rolloverSettlementCycle();
+  const inNextWeek = isSettlementCutActive();
+  const target = inNextWeek ? nextWeekSales : weeklySales;
+
+  if (!target.has(userId)) {
+    target.set(userId, {
+      amount: 0,
+      lastUpdate: Date.now(),
+      paid: false,
+      paidAt: null,
+      guildId,
+    });
+  }
+
+  const userData = target.get(userId);
+  userData.amount += kwota;
+  userData.lastUpdate = Date.now();
+  userData.guildId = guildId;
+
+  // Sprzedaże następnego tygodnia nie trafiają do tabeli weekly_sales, bo nadpisałyby aktualne rozliczenie
+  if (!inNextWeek) {
+    await db.saveWeeklySale(userId, userData.amount, guildId, userData.paid || false, userData.paidAt || null, userData.lastUpdate);
+  }
+  scheduleSavePersistentState(true);
+  return { userData, inNextWeek };
+}
 
 async function sendRozliczeniaStatusReport(guild, forceNewMessage = false) {
   try {
@@ -10314,7 +10329,10 @@ async function sendRozliczeniaStatusReport(guild, forceNewMessage = false) {
     const container = new ContainerBuilder().setAccentColor(COLOR_BLUE);
 
     const activeSalesCount = Array.from(weeklySales.values()).filter((data) => data.amount > 0).length;
-    if (activeSalesCount === 0) {
+    const nextWeekEntries = Array.from(nextWeekSales.entries())
+      .filter(([_, data]) => data.amount > 0)
+      .sort((a, b) => b[1].amount - a[1].amount);
+    if (activeSalesCount === 0 && nextWeekEntries.length === 0) {
       const timerLine = `> \`⏳\` × **Kolejne rozliczenia zaczynają się:** <t:${getNextSundayTimestamp()}:R>`;
 
       container.addTextDisplayComponents(new TextDisplayBuilder().setContent("# `📊` STATYSTYKI ROZLICZEŃ"));
@@ -10381,6 +10399,21 @@ async function sendRozliczeniaStatusReport(guild, forceNewMessage = false) {
     const klientEmoji = findGuildEmojiByName(guild?.id, "klient");
     const userEmojiStr = klientEmoji ? toGuildEmojiMarkup(klientEmoji) : "👤";
 
+    // Sprzedaże po odcięciu niedzielnym – pokazywane pod kreską, pod listą aktualnego rozliczenia
+    const nextWeekText = nextWeekEntries.map(([userId, data]) => {
+      const userRate = getUserCommissionRate(userId);
+      const prowizja = (data.amount * userRate).toFixed(2);
+      const percentStr = `${Math.round(userRate * 100)}%`;
+      return `> ${userEmojiStr} <@${userId}>: **${data.amount.toLocaleString("pl-PL")} zł** (prowizja ${percentStr}: **${prowizja} zł**)`;
+    }).join("\n");
+    const appendNextWeekSection = () => {
+      if (nextWeekEntries.length === 0) return;
+      container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(
+        "> `🆕` × **Sprzedaże z niedzieli (rozliczenie w przyszłym tygodniu):**\n" + nextWeekText
+      ));
+    };
+
     const { dayOfWeek, hour } = getPolandTime();
 
     const hasUnpaidSales = Array.from(weeklySales.values()).some((data) => data.amount > 0 && !data.paid);
@@ -10411,6 +10444,7 @@ async function sendRozliczeniaStatusReport(guild, forceNewMessage = false) {
       }).join("\n");
 
       container.addTextDisplayComponents(new TextDisplayBuilder().setContent(salesListText));
+      appendNextWeekSection();
     } else {
       const isSunday = dayOfWeek === 0;
       const isBefore20 = hour < 20;
@@ -10430,7 +10464,12 @@ async function sendRozliczeniaStatusReport(guild, forceNewMessage = false) {
         return `> ${userEmojiStr} <@${userId}>: **${data.amount.toLocaleString("pl-PL")} zł** (prowizja ${percentStr}: **${prowizja} zł**)`;
       }).join("\n");
 
-      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(salesListText));
+      if (sortedSales.length > 0) {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(salesListText));
+      } else {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent("> `ℹ️` × Brak sprzedaży do rozliczenia w tym tygodniu."));
+      }
+      appendNextWeekSection();
       container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
       container.addTextDisplayComponents(new TextDisplayBuilder().setContent(timerLine));
     }
@@ -10598,6 +10637,7 @@ async function handleRozliczenieZaplacilCommand(interaction) {
     isSundayResetTriggered = false;
     await db.resetWeeklySales().catch((e) => console.error("Błąd resetWeeklySales:", e));
   }
+  await rolloverSettlementCycle();
 
   scheduleSavePersistentState(true);
 
@@ -21762,36 +21802,7 @@ async function handleModalSubmit(interaction) {
     }
 
     const userId = interaction.user.id;
-    if (!weeklySales.has(userId)) {
-      weeklySales.set(userId, {
-        amount: 0,
-        lastUpdate: Date.now(),
-        paid: false,
-        paidAt: null,
-        guildId: interaction.guild.id,
-      });
-    }
-
-    const userData = weeklySales.get(userId);
-    if (userData.paid) {
-      userData.amount = 0;
-      userData.paid = false;
-      userData.paidAt = null;
-    }
-    userData.amount += kwota;
-    userData.lastUpdate = Date.now();
-    userData.guildId = interaction.guild.id;
-    weeklySales.set(userId, userData);
-
-    await db.saveWeeklySale(
-      userId,
-      userData.amount,
-      interaction.guild.id,
-      userData.paid || false,
-      userData.paidAt || null,
-      userData.lastUpdate,
-    );
-    scheduleSavePersistentState(true);
+    const { userData } = await addSaleToSettlement(userId, kwota, interaction.guild.id);
 
     const prowizja = (userData.amount * ROZLICZENIA_PROWIZJA).toFixed(2);
 
@@ -28049,6 +28060,13 @@ let lastDeadline20Trigger = "";
 // Funkcja do sprawdzania i resetowania cotygodniowych rozliczeń
 async function checkWeeklyReset() {
   const { dayOfWeek, hour, minute, dateKey } = getPolandTime();
+
+  // Poza niedzielą: jeśli aktualne rozliczenie jest opłacone, sprzedaże z niedzieli przechodzą do niego
+  if (await rolloverSettlementCycle()) {
+    for (const guild of client.guilds.cache.values()) {
+      await sendRozliczeniaStatusReport(guild).catch(() => null);
+    }
+  }
 
   // Niedziela 00:00 - odebranie limitów dla osób z niezapłaconym rozliczeniem
   if (dayOfWeek === 0 && hour === 0 && lastReset00Trigger !== dateKey) {
