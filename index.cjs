@@ -10212,6 +10212,7 @@ async function handleSlashCommand(interaction) {
       });
       break;
     }
+    case "ostrzezenie":
     case "warn":
       await handleOstrzezenieCommand(interaction);
       break;
