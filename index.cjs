@@ -6412,6 +6412,9 @@ const commands = [
     .addStringOption((o) =>
       o.setName("powod").setDescription("Powód ostrzeżenia").setRequired(true)
     )
+    .addBooleanOption((o) =>
+      o.setName("ukryj").setDescription("Tylko zapisz ostrzeżenie, bez embeda i pinga na kanale")
+    )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
     .toJSON(),
   new SlashCommandBuilder()
@@ -6422,6 +6425,9 @@ const commands = [
     )
     .addStringOption((o) =>
       o.setName("powod").setDescription("Powód ostrzeżenia").setRequired(true)
+    )
+    .addBooleanOption((o) =>
+      o.setName("ukryj").setDescription("Tylko zapisz ostrzeżenie, bez embeda i pinga na kanale")
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
     .toJSON(),
@@ -12728,6 +12734,7 @@ async function handleOstrzezenieCommand(interaction) {
 
     const targetUser = interaction.options.getUser("sprzedawca");
     const powod = interaction.options.getString("powod");
+    const silent = interaction.options.getBoolean("ukryj") === true;
 
     if (!targetUser) {
       await interaction.editReply({
@@ -12770,18 +12777,24 @@ async function handleOstrzezenieCommand(interaction) {
     }
     if (!warnChannel) warnChannel = interaction.channel;
 
-    // Ping osobno (poza embedem), potem container
-    const pingMsg = await warnChannel.send({ content: `<@${targetUser.id}>` }).catch(() => null);
-    const embedMsg = await warnChannel.send({
-      components: [container],
-      flags: MessageFlags.IsComponentsV2,
-    }).catch(() => null);
+    // Tryb ukryty: ostrzeżenie zostaje w liczniku, ale nic nie trafia na kanał
+    let pingMsg = null;
+    let embedMsg = null;
+    if (!silent) {
+      // Ping osobno (poza embedem), potem container
+      pingMsg = await warnChannel.send({ content: `<@${targetUser.id}>` }).catch(() => null);
+      embedMsg = await warnChannel.send({
+        components: [container],
+        flags: MessageFlags.IsComponentsV2,
+      }).catch(() => null);
+    }
 
     const warnMsgs = sellerWarnMessages.get(key) || [];
     warnMsgs.push({
-      pingMessageId: pingMsg?.id,
-      embedMessageId: embedMsg?.id,
+      pingMessageId: pingMsg?.id || null,
+      embedMessageId: embedMsg?.id || null,
       channelId: warnChannel.id,
+      hidden: silent,
     });
     sellerWarnMessages.set(key, warnMsgs);
 
@@ -12821,7 +12834,9 @@ async function handleOstrzezenieCommand(interaction) {
     }
 
     await interaction.editReply({
-      content: `> \`✅\` × Pomyślnie wystawiono ostrzeżenie **${currentCount}/3** dla użytkownika <@${targetUser.id}> na kanale <#${warnChannel.id}>.`,
+      content: silent
+        ? `> \`✅\` × Zapisano ukryte ostrzeżenie **${currentCount}/3** dla użytkownika <@${targetUser.id}> (bez wiadomości na kanale).`
+        : `> \`✅\` × Pomyślnie wystawiono ostrzeżenie **${currentCount}/3** dla użytkownika <@${targetUser.id}> na kanale <#${warnChannel.id}>.`,
     });
   } catch (err) {
     console.error("Błąd w handleOstrzezenieCommand:", err);
