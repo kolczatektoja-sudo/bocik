@@ -84,7 +84,7 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
   }
 
   async function request(url, method, body) {
-    rateLimitGate.assertAllowed('monitoring');
+    rateLimitGate.assertAllowed('monitoring', { authenticated: false });
     const controller = new AbortController();
     const timeout = timers.setTimeout(() => controller.abort(), 4000);
     try {
@@ -92,8 +92,21 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
         body: JSON.stringify(body), signal: controller.signal });
       if (!response.ok) {
         const data = response.status === 429 ? await response.json().catch(() => null) : null;
-        rateLimitGate.observe('monitoring', response, data);
-        throw new Error(`Monitoring: HTTP ${response.status}`);
+        const retryAfterMs = rateLimitGate.observe('monitoring', response, data, { authenticated: false });
+        const error = new Error(`Monitoring: HTTP ${response.status}`);
+        if (response.status === 429) {
+          // Log the actual Discord response once, without the webhook URL/token.
+          // Subsequent local cooldown errors must not produce more webhook traffic.
+          error.rateLimit = {
+            source: 'monitoring-webhook',
+            reportedGlobal: typeof data?.global === 'boolean' ? data.global : null,
+            scope: response.headers?.get?.('x-ratelimit-scope') ?? null,
+            retryAfterMs,
+            message: sanitize(data?.message || 'Brak komunikatu JSON', secrets),
+            ...rateLimitGate.snapshot(),
+          };
+        }
+        throw error;
       }
       return await response.json();
     } finally { timers.clearTimeout(timeout); }
@@ -101,7 +114,7 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
 
   function send(kind, detail, { dedupeKey, editStatus = false } = {}) {
     if (!webhookUrl || queued >= 40) return Promise.resolve(false);
-    try { rateLimitGate.assertAllowed('monitoring'); }
+    try { rateLimitGate.assertAllowed('monitoring', { authenticated: false }); }
     catch (error) { if (error.localCooldown) return Promise.resolve(false); throw error; }
     const key = dedupeKey || (kind === 'status' ? null : `${kind}:${detail}`);
     if (key && lastEvents.has(key) && now() - lastEvents.get(key) < 60000) return Promise.resolve(false);
@@ -124,7 +137,11 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
         }
         if (editStatus && result?.id) statusMessageId = result.id;
         return true;
-      } catch (err) { if (!err.localCooldown) originalError('[MONITORING]', sanitize(err.message, secrets)); return false; }
+      } catch (err) {
+        if (!err.localCooldown) originalError('[MONITORING]', sanitize(err.message, secrets),
+          ...(err.rateLimit ? [err.rateLimit] : []));
+        return false;
+      }
       finally { queued--; }
     });
     return queue;

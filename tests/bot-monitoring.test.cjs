@@ -91,6 +91,48 @@ test('one global 429 stops queued webhook errors instead of amplifying the block
   assert.match(f.logger.snapshot().status, /HTTP 429/);
 });
 
+test('long webhook-only 429 stops monitoring without freezing ticket callbacks or bot REST', async () => {
+  let requests = 0;
+  const gate = createDiscordRateLimitGate({ now: () => 0 });
+  const f = fixture({ overrides: {
+    rateLimitGate: gate,
+    fetchImpl: async () => {
+      requests++;
+      return { status: 429, ok: false,
+        headers: { get: name => name === 'retry-after' ? '3130' : name === 'x-ratelimit-scope' ? 'shared' : null },
+        json: async () => ({ global: false, retry_after: 3130, message: 'The resource is being rate limited.' }) };
+    },
+  } });
+  await f.logger.boot;
+  await Promise.all(Array.from({ length: 10 }, (_, i) => f.logger.captureError(`failed ${i}`)));
+  await f.logger.updateStatus();
+  assert.equal(requests, 1);
+  assert.equal(gate.snapshot().global_retry_after_ms, 0);
+  assert.throws(() => gate.assertAllowed('monitoring', { authenticated: false }), { localCooldown: true });
+  gate.assertAllowed('bot-rest');
+  gate.assertAllowed('interaction-rest:interactions:42', { authenticated: false });
+});
+
+test('monitoring logs the original scope and delay without exposing webhook credentials', async () => {
+  const logs = [];
+  const originalError = console.error;
+  let f;
+  try {
+    console.error = (...args) => logs.push(args);
+    f = fixture({ overrides: { fetchImpl: async () => ({ status: 429, ok: false,
+      headers: { get: name => name === 'x-ratelimit-scope' ? 'shared' : null },
+      json: async () => ({ global: false, retry_after: 3130,
+        message: 'The resource is being rate limited. https://discord.com/api/webhooks/123/hidden-token' }) }) } });
+  } finally { console.error = originalError; }
+  await f.logger.boot;
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][2].source, 'monitoring-webhook');
+  assert.equal(logs[0][2].reportedGlobal, false);
+  assert.equal(logs[0][2].scope, 'shared');
+  assert.equal(logs[0][2].retryAfterMs, 3130100);
+  assert.doesNotMatch(JSON.stringify(logs), /hidden-token/);
+});
+
 test('reconnect status reflects the shard state even when the client still reports ready', async () => {
   const f = fixture(); await f.logger.boot;
   f.client.emit('shardReconnecting', 0);

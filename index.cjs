@@ -163,7 +163,7 @@ const monitoring = createBotMonitoring({
 // discord.js wraz z jego kolejką i respektowaniem retry_after.
 const originalClientRestGet = client.rest.get.bind(client.rest);
 client.rest.get = async (route, options) => {
-  discordRateLimit.assertAllowed('bot-rest');
+  assertDiscordRequestAllowed(route);
   if (route === Routes.gatewayBot()) {
     lastDiscordLoginDiagnostic = {
       stage: 'gateway_fallback',
@@ -192,9 +192,21 @@ function isInteractionResponseRoute(route) {
   );
 }
 
+function interactionRateLimitKey(route) {
+  return `interaction-rest:${String(route).split('/')[1]}:${String(route).split('/')[2]}`;
+}
+
+function assertDiscordRequestAllowed(route) {
+  if (isInteractionResponseRoute(route)) {
+    discordRateLimit.assertAllowed(interactionRateLimitKey(route), { authenticated: false });
+  } else {
+    discordRateLimit.assertAllowed('bot-rest');
+  }
+}
+
 async function directInteractionRestRequest(method, route, options = {}) {
-  const rateLimitKey = `interaction-rest:${String(route).split('/')[1]}:${String(route).split('/')[2]}`;
-  discordRateLimit.assertAllowed(rateLimitKey);
+  const rateLimitKey = interactionRateLimitKey(route);
+  assertDiscordRequestAllowed(route);
   const query = options.query ? `?${new URLSearchParams(options.query).toString()}` : "";
   const controller = new AbortController();
   const isInitialResponse = /^\/interactions\/\d+\/[^/]+\/callback$/.test(String(route || ""));
@@ -218,7 +230,7 @@ async function directInteractionRestRequest(method, route, options = {}) {
       }
     }
     if (!response.ok) {
-      const retryAfterMs = discordRateLimit.observe(rateLimitKey, response, data);
+      const retryAfterMs = discordRateLimit.observe(rateLimitKey, response, data, { authenticated: false });
       const error = new Error(
         `Discord interaction HTTP ${response.status} via ${new URL(DISCORD_API_BASE).hostname}`,
       );
@@ -237,7 +249,7 @@ async function directInteractionRestRequest(method, route, options = {}) {
 for (const methodName of ["post", "patch", "delete"]) {
   const originalMethod = client.rest[methodName].bind(client.rest);
   client.rest[methodName] = async (route, options = {}) => {
-    discordRateLimit.assertAllowed('bot-rest');
+    assertDiscordRequestAllowed(route);
     // Pliki wymagają multipart i pozostają w standardowym kliencie REST.
     if (isInteractionResponseRoute(route) && !options.files?.length) {
       return directInteractionRestRequest(methodName.toUpperCase(), route, options);
@@ -247,15 +259,27 @@ for (const methodName of ["post", "patch", "delete"]) {
 }
 const originalClientRestPut = client.rest.put.bind(client.rest);
 client.rest.put = async (route, options) => {
-  discordRateLimit.assertAllowed('bot-rest');
+  assertDiscordRequestAllowed(route);
   return originalClientRestPut(route, options);
 };
 function trackDiscordRestRateLimits(restClient) {
   restClient.on('rateLimited', (data) => {
     if (data.global) discordRateLimit.block('bot-rest', data.retryAfter, true);
   });
-  restClient.on('response', (_request, response) => {
-    discordRateLimit.observe('bot-rest', response, undefined, { globalOnly: true });
+  restClient.on('response', async (request, response) => {
+    if (response.status !== 429) return;
+    const route = request.path || request.route || '';
+    const authenticated = request.data?.auth ?? !isInteractionResponseRoute(route);
+    let data = null;
+    try { data = await response.clone().json(); } catch (_) { /* Headers still describe the SDK limit. */ }
+    discordRateLimit.observe(authenticated ? 'bot-rest' : interactionRateLimitKey(route), response, data,
+      { globalOnly: true, authenticated });
+    console.warn('[DISCORD_REST] Zakres blokady HTTP 429:', {
+      authenticated,
+      global: data?.global === true,
+      scope: response.headers.get('x-ratelimit-scope'),
+      ...discordRateLimit.snapshot(),
+    });
   });
 }
 trackDiscordRestRateLimits(client.rest);
