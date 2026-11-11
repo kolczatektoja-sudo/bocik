@@ -36,7 +36,8 @@ const { editContestWithGif, repairContestGifs } = require("./contest-gif.cjs");
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://canary.discord.com/api";
 const ENABLE_HEAVY_STARTUP_SYNC = process.env.ENABLE_HEAVY_STARTUP_SYNC === "true";
 const { createDiscordRateLimitGate } = require("./discord-rate-limit.cjs");
-const discordRateLimit = createDiscordRateLimitGate();
+// Carry the currently reported Retry-After across this deployment; expired seeds are ignored.
+const discordRateLimit = createDiscordRateLimitGate({ initialState: require("./discord-rate-limit-bootstrap.json") });
 
 // Load local .env when running on a PC (Render ma własne env vars)
 try {
@@ -164,7 +165,6 @@ const monitoring = createBotMonitoring({
 // discord.js wraz z jego kolejką i respektowaniem retry_after.
 const originalClientRestGet = client.rest.get.bind(client.rest);
 client.rest.get = async (route, options) => {
-  assertDiscordRequestAllowed(route);
   if (route === Routes.gatewayBot()) {
     lastDiscordLoginDiagnostic = {
       stage: 'gateway_fallback',
@@ -182,6 +182,7 @@ client.rest.get = async (route, options) => {
       },
     };
   }
+  assertDiscordRequestAllowed(route);
   return originalClientRestGet(route, options);
 };
 
@@ -6490,6 +6491,14 @@ const commands = [
 
 const rest = new REST({ version: "10", api: DISCORD_API_BASE }).setToken(process.env.BOT_TOKEN);
 trackDiscordRestRateLimits(rest);
+// Command registration shares the same server-reported cooldown as the client.
+for (const methodName of ["get", "post", "put", "patch", "delete"]) {
+  const original = rest[methodName].bind(rest);
+  rest[methodName] = async (...args) => {
+    discordRateLimit.assertAllowed("bot-rest");
+    return original(...args);
+  };
+}
 
 // Helper: human-readable ms
 function humanizeMs(ms) {
@@ -21102,16 +21111,6 @@ async function ticketClaimCommon(interaction, channelId, opts = {}) {
   }
   claimingInProgress.add(channelId);
 
-  try {
-    // szybka odpowiedź, żeby Discord nie wyświetlał błędu interakcji (po quizie)
-    if (!interaction.replied && !interaction.deferred) {
-      if (isBtn) {
-        await interaction.deferUpdate().catch(() => null);
-      } else {
-        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] }).catch(() => null);
-      }
-    }
-
     const replyEphemeral = async (text) => {
       // jeśli interakcja nie została jeszcze potwierdzona, użyj reply()
       if (!interaction.replied && !interaction.deferred) {
@@ -21126,6 +21125,17 @@ async function ticketClaimCommon(interaction, channelId, opts = {}) {
         await interaction.editReply({ content: text }).catch(() => null);
       }
     };
+
+  try {
+    // szybka odpowiedź, żeby Discord nie wyświetlał błędu interakcji (po quizie)
+    if (!interaction.replied && !interaction.deferred) {
+      if (isBtn) {
+        await interaction.deferUpdate();
+      } else {
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+      }
+    }
+
 
     const ticketData = ticketOwners.get(channelId) || {
       claimedBy: null,
@@ -21302,6 +21312,11 @@ async function ticketClaimCommon(interaction, channelId, opts = {}) {
     }
     return { ok: true, reason: "claimed", channelId, claimedBy: claimerId };
   } catch (err) {
+    // A failed acknowledgement must not move a ticket or trigger more REST calls.
+    if (err?.localCooldown || err?.status === 429 || err?.code === 429 || err?.code === 10062 || err?.code === 40060) {
+      console.warn("[ticket-claim] Przejęcie przerwane przed odpowiedzią:", err.code || err.status);
+      return { ok: false, reason: "response-unavailable", channelId };
+    }
     console.error("Błąd przy przejmowaniu ticketu:", err);
     await replyEphemeral("❌ Wystąpił błąd podczas przejmowania ticketu.");
     return { ok: false, reason: "error", channelId };
@@ -26869,7 +26884,7 @@ async function handleKonkursCreateModal(interaction) {
     : 0;
 
   let targetChannel = interaction.channel;
-  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] }).catch(() => { });
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
   const endsAt = Date.now() + timeMs;
   const ts = Math.floor(endsAt / 1000);
@@ -27077,7 +27092,7 @@ async function handleKonkursCreateModal(interaction) {
     : 0;
 
   let targetChannel = interaction.channel;
-  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] }).catch(() => { });
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
   const endsAt = Date.now() + timeMs;
   const ts = Math.floor(endsAt / 1000);

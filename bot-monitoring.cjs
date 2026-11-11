@@ -155,13 +155,18 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
   }
   async function savePhase(phase, reason) {
     if (!storeAvailable || !store) return;
-    try { await bounded(() => store.save({ sessionId, startedAt, version, phase, reason, updatedAt: now() })); }
+    try { await bounded(() => store.save({ sessionId, startedAt, version, phase, reason, updatedAt: now(),
+      rateLimitState: rateLimitGate.exportState?.() })); }
     catch (err) { originalError('[MONITORING/SESJA]', sanitize(err.message, secrets)); }
   }
 
   const boot = (async () => {
     if (store) {
-      try { previous = await bounded(() => store.load()); storeAvailable = true; }
+      try {
+        previous = await bounded(() => store.load());
+        rateLimitGate.restoreState?.(previous?.rateLimitState);
+        storeAvailable = true;
+      }
       catch (err) { originalError('[MONITORING/SESJA]', sanitize(err.message, secrets)); }
     }
     const detail = previous
@@ -171,7 +176,12 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
     await savePhase('starting', 'Uruchamianie');
   })();
 
+  const unsubscribeRateLimits = rateLimitGate.subscribe?.(() => {
+    if (storeAvailable && !stopping) return savePhase('running', 'Zmiana ograniczenia Discord API');
+  });
+
   function captureError(...args) {
+    if (args.some(arg => arg?.localCooldown === true)) return Promise.resolve(false);
     const detail = sanitize(args.map(a => a instanceof Error ? `${a.name}: ${a.message}\n${a.stack || ''}`
       : typeof a === 'string' ? a : util.inspect(a, { depth: 2 })).join(' '), secrets);
     // Node prints process warnings through console.error; they are not failed tasks.
@@ -262,6 +272,7 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
     await shutdown('Nieobsłużony wyjątek krytyczny', 1, flush);
   }
   function dispose() {
+    unsubscribeRateLimits?.();
     intervals.forEach(id => timers.clearInterval(id));
     if (installConsole) console.error = originalError;
   }

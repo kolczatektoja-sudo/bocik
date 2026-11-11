@@ -3,6 +3,27 @@ const assert = require('node:assert/strict');
 const { createDiscordRateLimitGate } = require('../discord-rate-limit.cjs');
 const response = headers => ({ status: 429, headers: { get: name => headers[name] ?? null } });
 
+test('absolute IP cooldown survives restart without extending the server deadline', () => {
+  let now = 1000;
+  const first = createDiscordRateLimitGate({ now: () => now });
+  first.block('monitoring', 60000, 'ip');
+  now = 11000;
+  const restarted = createDiscordRateLimitGate({ now: () => now, initialState: first.exportState() });
+  assert.equal(restarted.snapshot().ip_retry_after_ms, 50000);
+  assert.throws(() => restarted.assertAllowed('bot-rest'));
+  now = 61001;
+  assert.doesNotThrow(() => restarted.assertAllowed('bot-rest'));
+  const afterExpiry = createDiscordRateLimitGate({ now: () => now, initialState: first.exportState() });
+  assert.equal(afterExpiry.snapshot().ip_retry_after_ms, 0);
+});
+
+test('restoring older state never clears or shortens a newer cooldown', () => {
+  const gate = createDiscordRateLimitGate({ now: () => 1000 });
+  gate.block('bot-rest', 10000, 'ip');
+  gate.restoreState({ version: 1, ipUntil: 2000 });
+  assert.equal(gate.snapshot().ip_retry_after_ms, 10000);
+});
+
 test('reported global block pauses every producer even without a retry_after field', () => {
   let now = 1000;
   const gate = createDiscordRateLimitGate({ now: () => now });

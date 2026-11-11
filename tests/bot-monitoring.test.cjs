@@ -24,6 +24,33 @@ function fixture(options = {}) {
   return { client, logger, calls, saved, lifecycle, advance: ms => { clock += ms; } };
 }
 
+test('persisted IP cooldown is restored before any startup webhook request', async () => {
+  const gate = createDiscordRateLimitGate({ now: () => 1791488660000 });
+  const f = fixture({
+    previous: { sessionId: 'old', phase: 'running', rateLimitState: {
+      version: 1, ipUntil: 1791488720000,
+    } },
+    overrides: { rateLimitGate: gate },
+  });
+  await f.logger.boot;
+  assert.equal(f.calls.length, 0);
+  assert.equal(gate.snapshot().ip_retry_after_ms, 60000);
+  assert.equal(f.saved.at(-1).rateLimitState.ipUntil, 1791488720000);
+  f.logger.dispose();
+});
+
+test('new cooldown is saved without attempting another Discord webhook', async () => {
+  const gate = createDiscordRateLimitGate({ now: () => 1791488660000 });
+  const f = fixture({ overrides: { rateLimitGate: gate } });
+  await f.logger.boot;
+  const requests = f.calls.length;
+  gate.block('bot-rest', 60000, 'ip');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.saved.at(-1).rateLimitState.ipUntil, 1791488720000);
+  assert.equal(f.calls.length, requests);
+  f.logger.dispose();
+});
+
 test('first boot and previous sessions have distinct start/restart messages', async () => {
   const first = fixture(); await first.logger.boot;
   assert.match(first.calls[0].body.embeds[0].title, /START PROCESU/);

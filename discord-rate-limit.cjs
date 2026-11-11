@@ -1,14 +1,40 @@
-function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000 } = {}) {
+function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initialState } = {}) {
   let globalUntil = 0;
   let ipUntil = 0;
   const routes = new Map();
   let lastLimitedAt = null;
+  let lastLimit = null;
+  const listeners = new Set();
+  function exportState() {
+    return { version: 1, globalUntil, ipUntil, lastLimitedAt, lastLimit,
+      routes: [...routes].filter(([, until]) => until > now()) };
+  }
+  function notify() {
+    for (const listener of listeners) {
+      try { Promise.resolve(listener()).catch(() => {}); } catch (_) { /* Persistence cannot break the gate. */ }
+    }
+  }
+  function restoreState(state) {
+    if (!state || state.version !== 1) return;
+    const deadline = value => Number.isFinite(value) && value > now() ? value : 0;
+    globalUntil = Math.max(globalUntil, deadline(state.globalUntil));
+    ipUntil = Math.max(ipUntil, deadline(state.ipUntil));
+    for (const entry of Array.isArray(state.routes) ? state.routes : []) {
+      if (!Array.isArray(entry) || typeof entry[0] !== 'string') continue;
+      const until = deadline(entry[1]);
+      if (until) routes.set(entry[0], Math.max(routes.get(entry[0]) || 0, until));
+    }
+    if (typeof state.lastLimitedAt === 'string') lastLimitedAt = state.lastLimitedAt;
+    if (state.lastLimit && typeof state.lastLimit === 'object') lastLimit = state.lastLimit;
+  }
+  restoreState(initialState);
   function snapshot() {
     return {
       global_retry_after_ms: Math.max(0, globalUntil - now(), ipUntil - now()),
       bot_retry_after_ms: Math.max(0, globalUntil - now()),
       ip_retry_after_ms: Math.max(0, ipUntil - now()),
       last_limited_at: lastLimitedAt,
+      last_limit: lastLimit,
     };
   }
   function assertAllowed(key, { authenticated = true } = {}) {
@@ -28,6 +54,7 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000 } = {}
     if (routes.size > 200) {
       for (const [route, expiry] of routes) if (expiry <= now()) routes.delete(route);
     }
+    notify();
     return delay;
   }
   function observe(key, response, data, { globalOnly = false, authenticated = true } = {}) {
@@ -48,8 +75,14 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000 } = {}
     // Tokenless interaction/webhook requests use the IP global limit, not the
     // bot token's global limit. A temporary API/IP ban stops both transports.
     const scope = ipBlocked || (global && !authenticated) ? 'ip' : global;
+    // Keep the origin of the actual HTTP 429, not subsequent localCooldown errors.
+    lastLimit = { key, authenticated, scope: response.headers?.get?.('x-ratelimit-scope') || null,
+      reportedGlobal: global, temporaryApiBan: ipBlocked,
+      blockedScope: scope === 'ip' ? 'ip' : scope ? 'bot' : 'route',
+      observedAt: new Date(now()).toISOString() };
     return block(key, ms > 0 ? ms + 100 : fallbackMs, scope);
   }
-  return { snapshot, assertAllowed, observe, block };
+  return { snapshot, assertAllowed, observe, block, exportState, restoreState,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createDiscordRateLimitGate };
