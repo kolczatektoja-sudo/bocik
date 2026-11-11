@@ -5,6 +5,33 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
   let lastLimitedAt = null;
   let lastLimit = null;
   const listeners = new Set();
+  const responseBuckets = new Map();
+  function recentHttp() {
+    const oldest = Math.floor(now() / 60000) - 9;
+    for (const minute of responseBuckets.keys()) if (minute < oldest) responseBuckets.delete(minute);
+    const result = { window_minutes: 10, total: 0, invalid: 0, by_source: {}, by_status: {} };
+    for (const bucket of responseBuckets.values()) {
+      result.total += bucket.total;
+      result.invalid += bucket.invalid;
+      for (const [key, count] of Object.entries(bucket.by_source)) result.by_source[key] = (result.by_source[key] || 0) + count;
+      for (const [key, count] of Object.entries(bucket.by_status)) result.by_status[key] = (result.by_status[key] || 0) + count;
+    }
+    return result;
+  }
+  function recordResponse(source, response) {
+    // Only aggregate transport labels and status codes: never store webhook tokens or URLs.
+    if (!['bot-rest', 'interaction-rest', 'monitoring-webhook', 'registration-rest'].includes(source)) source = 'other';
+    const minute = Math.floor(now() / 60000);
+    const bucket = responseBuckets.get(minute) || { total: 0, invalid: 0, by_source: {}, by_status: {} };
+    const status = String(response.status);
+    bucket.total++;
+    if ([401, 403, 429].includes(response.status) &&
+        !(response.status === 429 && response.headers?.get?.('x-ratelimit-scope') === 'shared')) bucket.invalid++;
+    bucket.by_source[source] = (bucket.by_source[source] || 0) + 1;
+    bucket.by_status[status] = (bucket.by_status[status] || 0) + 1;
+    responseBuckets.set(minute, bucket);
+    recentHttp();
+  }
   function exportState() {
     return { version: 1, globalUntil, ipUntil, lastLimitedAt, lastLimit,
       routes: [...routes].filter(([, until]) => until > now()) };
@@ -35,6 +62,7 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
       ip_retry_after_ms: Math.max(0, ipUntil - now()),
       last_limited_at: lastLimitedAt,
       last_limit: lastLimit,
+      recent_http: recentHttp(),
     };
   }
   function assertAllowed(key, { authenticated = true } = {}) {
@@ -82,7 +110,7 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
       observedAt: new Date(now()).toISOString() };
     return block(key, ms > 0 ? ms + 100 : fallbackMs, scope);
   }
-  return { snapshot, assertAllowed, observe, block, exportState, restoreState,
+  return { snapshot, assertAllowed, observe, block, exportState, restoreState, recordResponse,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createDiscordRateLimitGate };

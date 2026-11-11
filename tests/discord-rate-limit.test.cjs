@@ -3,6 +3,21 @@ const assert = require('node:assert/strict');
 const { createDiscordRateLimitGate } = require('../discord-rate-limit.cjs');
 const response = headers => ({ status: 429, headers: { get: name => headers[name] ?? null } });
 
+test('HTTP diagnostics count actual responses without conflating shared limits with invalid requests', () => {
+  let now = 0;
+  const gate = createDiscordRateLimitGate({ now: () => now });
+  gate.recordResponse('bot-rest', { status: 200 });
+  gate.recordResponse('interaction-rest', { status: 403 });
+  gate.recordResponse('monitoring-webhook', response({ 'x-ratelimit-scope': 'shared' }));
+  gate.recordResponse('monitoring-webhook', response({}));
+  assert.equal(gate.snapshot().recent_http.total, 4);
+  assert.equal(gate.snapshot().recent_http.invalid, 2);
+  assert.equal(gate.snapshot().recent_http.by_source['monitoring-webhook'], 2);
+  assert.equal(gate.snapshot().recent_http.by_status['429'], 2);
+  now = 600001;
+  assert.equal(gate.snapshot().recent_http.total, 0);
+});
+
 test('absolute IP cooldown survives restart without extending the server deadline', () => {
   let now = 1000;
   const first = createDiscordRateLimitGate({ now: () => now });

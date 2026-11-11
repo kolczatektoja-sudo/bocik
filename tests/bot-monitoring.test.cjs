@@ -80,10 +80,22 @@ test('errors are counted, secrets removed and repeated warnings deduplicated', a
   await f.logger.captureError(new Error('TOPSECRET123 Bearer private-token'));
   await f.logger.captureError('same failure'); await f.logger.captureError('same failure');
   assert.equal(f.logger.snapshot().errorCount, 3);
-  assert.equal(f.calls.length, 3);
+  assert.equal(f.calls.length, 2);
   assert.doesNotMatch(JSON.stringify(f.calls), /TOPSECRET123|private-token/);
   f.advance(16 * 60000);
   assert.match(f.logger.snapshot().status, /Działa prawidłowo/);
+});
+
+test('distinct error bursts produce one webhook card per minute while counting every error', async () => {
+  const f = fixture(); await f.logger.boot;
+  await Promise.all(Array.from({ length: 100 }, (_, i) => f.logger.captureError(`interaction ${i} failed`)));
+  assert.equal(f.logger.snapshot().errorCount, 100);
+  assert.equal(f.calls.length, 2); // Startup plus one error card.
+  f.advance(60001);
+  await f.logger.captureError('another error');
+  assert.equal(f.calls.length, 3);
+  assert.equal(f.logger.snapshot().errorCount, 101);
+  f.logger.dispose();
 });
 
 test('Node deprecation warnings are logged separately without increasing task errors', async () => {

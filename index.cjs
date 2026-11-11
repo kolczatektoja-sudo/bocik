@@ -222,6 +222,7 @@ async function directInteractionRestRequest(method, route, options = {}) {
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         signal: controller.signal,
     });
+    discordRateLimit.recordResponse('interaction-rest', response);
     const text = await response.text();
     let data = null;
     if (text) {
@@ -269,6 +270,7 @@ function trackDiscordRestRateLimits(restClient) {
     if (data.global) discordRateLimit.block('bot-rest', data.retryAfter, true);
   });
   restClient.on('response', async (request, response) => {
+    discordRateLimit.recordResponse(restClient === client.rest ? 'bot-rest' : 'registration-rest', response);
     if (response.status !== 429) return;
     const route = request.path || request.route || '';
     const authenticated = request.data?.auth ?? !isInteractionResponseRoute(route);

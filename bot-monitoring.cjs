@@ -90,6 +90,7 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
     try {
       const response = await fetchImpl(url, { method, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: controller.signal });
+      rateLimitGate.recordResponse?.('monitoring-webhook', response);
       if (!response.ok) {
         const data = response.status === 429 ? await response.json().catch(() => null) : null;
         const retryAfterMs = rateLimitGate.observe('monitoring', response, data, { authenticated: false });
@@ -189,7 +190,9 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
       return send('runtimeWarning', detail, { dedupeKey: `runtime-warning:${detail}` });
     }
     errorCount++; lastErrorTime = now(); recentErrors.push(now()); recentErrors = recentErrors.slice(-100);
-    return send('error', detail, { dedupeKey: `error:${detail}` });
+    // Preserve every error in Render and the counter; send at most one error card
+    // per minute even when different interaction IDs make stack traces unique.
+    return send('error', detail, { dedupeKey: 'error-summary-window' });
   }
   if (installConsole) console.error = (...args) => { originalError(...args); void captureError(...args); };
 
