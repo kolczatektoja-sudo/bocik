@@ -143,7 +143,6 @@ const client = new Client({
 const discordRestRecovery = createDiscordRecovery({
   gate: discordRateLimit,
   async probe() {
-    discordRateLimit.assertAllowed('bot-rest');
     const response = await fetch(`${DISCORD_API_BASE}/v10/users/@me`, {
       headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` },
       signal: AbortSignal.timeout(5000),
@@ -156,6 +155,7 @@ const discordRestRecovery = createDiscordRecovery({
       await response.body?.cancel?.();
     }
     if (!response.ok) throw Object.assign(new Error('Discord REST recovery probe failed'), { status: response.status });
+    discordRateLimit.reset?.();
   },
 });
 
@@ -7331,6 +7331,7 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[READY] Bot jest online i gotowy do pracy!`);
 
   await persistentStateReady;
+  discordRestRecovery.probeNow?.().catch(() => {});
 
   // Napraw tylko zapisane konkursy, bez skanowania historii kanałów.
   repairContestGifs(c, contests).catch(error => console.error("[contests] GIF repair:", error));
@@ -7409,6 +7410,7 @@ client.once(Events.ClientReady, async (c) => {
   }
 
   await persistentStateReady;
+  discordRestRecovery.probeNow?.().catch(() => {});
 
   await initializeCzyLegitCounter().catch((error) =>
     console.error("[czy-legit] Blad inicjalizacji licznika reakcji:", error),

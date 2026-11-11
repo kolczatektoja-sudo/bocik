@@ -41,8 +41,20 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
       try { Promise.resolve(listener()).catch(() => {}); } catch (_) { /* Persistence cannot break the gate. */ }
     }
   }
+  function reset() {
+    globalUntil = 0;
+    ipUntil = 0;
+    routes.clear();
+    lastLimitedAt = null;
+    lastLimit = null;
+    notify();
+  }
   function restoreState(state) {
     if (!state || state.version !== 1) return;
+    if (state.resetCooldown || initialState?.resetCooldown) {
+      reset();
+      return;
+    }
     const deadline = value => Number.isFinite(value) && value > now() ? value : 0;
     globalUntil = Math.max(globalUntil, deadline(state.globalUntil));
     ipUntil = Math.max(ipUntil, deadline(state.ipUntil));
@@ -111,7 +123,7 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
       observedAt: new Date(now()).toISOString() };
     return block(key, ms > 0 ? ms + 100 : fallbackMs, scope);
   }
-  return { snapshot, assertAllowed, observe, block, exportState, restoreState, recordResponse,
+  return { snapshot, assertAllowed, observe, block, exportState, restoreState, recordResponse, reset,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createDiscordRateLimitGate };

@@ -11,10 +11,10 @@ function createDiscordRecovery({ gate, probe, now = Date.now, timers = global })
     const wait = gate.snapshot().global_retry_after_ms;
     if (wait > 0) arm(wait + 100);
   }
-  async function check() {
+  async function check(force = false) {
     timer = null;
     if (disposed || busy) return;
-    if (gate.snapshot().global_retry_after_ms > 0) { schedule(); return; }
+    if (!force && gate.snapshot().global_retry_after_ms > 0) { schedule(); return; }
     busy = true;
     lastAttemptAt = new Date(now()).toISOString();
     try {
@@ -33,6 +33,7 @@ function createDiscordRecovery({ gate, probe, now = Date.now, timers = global })
   return {
     snapshot() { return { last_attempt_at: lastAttemptAt, last_success_at: lastSuccessAt,
       last_error: lastError, probe_running: busy, probe_scheduled: timer !== null }; },
+    probeNow() { return check(true); },
     dispose() { disposed = true; unsubscribe(); if (timer !== null) timers.clearTimeout(timer); timer = null; },
   };
 }

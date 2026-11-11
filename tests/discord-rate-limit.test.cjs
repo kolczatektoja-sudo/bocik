@@ -135,3 +135,15 @@ test('tokenless route cooldown still applies during bot global exemption', () =>
   assert.throws(() => gate.assertAllowed('interaction-rest:interactions:42', { authenticated: false }));
   gate.assertAllowed('interaction-rest:interactions:43', { authenticated: false });
 });
+
+test('resetCooldown in initialState clears cooldown and prevents restoring stale cooldowns', () => {
+  const gate = createDiscordRateLimitGate({
+    now: () => 0,
+    initialState: { version: 1, resetCooldown: true, ipUntil: 999999999 }
+  });
+  assert.equal(gate.snapshot().ip_retry_after_ms, 0);
+  assert.doesNotThrow(() => gate.assertAllowed('bot-rest'));
+  gate.restoreState({ version: 1, ipUntil: 888888888 });
+  assert.equal(gate.snapshot().ip_retry_after_ms, 0);
+  assert.doesNotThrow(() => gate.assertAllowed('bot-rest'));
+});

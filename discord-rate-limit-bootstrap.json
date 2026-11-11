@@ -1,16 +1,9 @@
 {
   "version": 1,
   "globalUntil": 0,
-  "ipUntil": 1794428430724,
-  "lastLimitedAt": "2026-11-11T19:20:37.624Z",
-  "lastLimit": {
-    "key": "interaction-rest:interactions:1570156314468810984",
-    "authenticated": false,
-    "scope": null,
-    "reportedGlobal": false,
-    "temporaryApiBan": true,
-    "blockedScope": "ip",
-    "observedAt": "2026-11-11T19:20:37.624Z"
-  },
-  "routes": []
+  "ipUntil": 0,
+  "lastLimitedAt": null,
+  "lastLimit": null,
+  "routes": [],
+  "resetCooldown": true
 }
