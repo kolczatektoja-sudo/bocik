@@ -27292,6 +27292,17 @@ async function handleKonkursJoinDirect(interaction, msgId) {
 
   const participantsCount = participantsMap.size;
 
+  // Odpowiedz przed wolnym odczytem/edycją panelu, zanim wygaśnie interakcja.
+  // Prosta odpowiedź dla nowego uczestnika
+  const joinEmbed = new EmbedBuilder()
+    .setColor(COLOR_BLUE)
+    .setDescription("> \`✅\` × Poprawnie dołączyłeś do konkursu.");
+
+  await interaction.reply({
+    embeds: [joinEmbed],
+    flags: [MessageFlags.Ephemeral],
+  });
+
   // Aktualizuj wiadomość konkursu
   try {
     const ch = await client.channels.fetch(contest.channelId).catch(() => null);
@@ -27342,15 +27353,7 @@ async function handleKonkursJoinDirect(interaction, msgId) {
     console.warn("Nie udało się zaktualizować embed/btn konkursu:", e);
   }
 
-  // Prosta odpowiedź dla nowego uczestnika
-  const joinEmbed = new EmbedBuilder()
-    .setColor(COLOR_BLUE)
-    .setDescription("> \`✅\` × Poprawnie dołączyłeś do konkursu.");
 
-  await interaction.reply({
-    embeds: [joinEmbed],
-    flags: [MessageFlags.Ephemeral],
-  });
 }
 
 async function endContestByMessageId(messageId) {
@@ -27650,6 +27653,16 @@ async function handleKonkursLeave(interaction, msgId) {
 
   const participantsCount = participantsMap.size;
 
+  // Odpowiedz przed wolnym odczytem/edycją panelu, zanim wygaśnie interakcja.
+  const leaveEmbed = new EmbedBuilder()
+    .setColor(COLOR_BLUE)
+    .setDescription("> \`🚪\` × Opuściłeś konkurs.");
+
+  await interaction.update({
+    embeds: [leaveEmbed],
+    components: [],
+  });
+
   // Aktualizujemy embed konkursu
   try {
     const ch = await client.channels.fetch(contest.channelId).catch(() => null);
@@ -27695,14 +27708,7 @@ async function handleKonkursLeave(interaction, msgId) {
     console.warn("Nie udało się zaktualizować embed/btn konkursu:", e);
   }
 
-  const leaveEmbed = new EmbedBuilder()
-    .setColor(COLOR_BLUE)
-    .setDescription("> \`🚪\` × Opuściłeś konkurs.");
 
-  await interaction.update({
-    embeds: [leaveEmbed],
-    components: [],
-  });
 }
 
 // --- Obsługa anulowania opuszczenia konkursu ---
