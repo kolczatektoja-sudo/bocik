@@ -33,7 +33,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { editContestWithGif, repairContestGifs } = require("./contest-gif.cjs");
-const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://canary.discord.com/api";
+const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://discord.com/api";
 const ENABLE_HEAVY_STARTUP_SYNC = process.env.ENABLE_HEAVY_STARTUP_SYNC === "true";
 const { createDiscordRateLimitGate } = require("./discord-rate-limit.cjs");
 const { createDiscordRecovery } = require("./discord-recovery.cjs");
@@ -72,13 +72,18 @@ let lastGatewayEventDiagnostic = {
   event: null,
   timestamp: null,
 };
+let lastSuccessfulInteractionResponseAt = null;
 
 app.get('/health', (req, res) => {
   const discordConnected = client.isReady();
+  const rateLimit = discordRateLimit.snapshot();
+  const interactionVerified = Boolean(lastSuccessfulInteractionResponseAt &&
+    (!rateLimit.last_limited_at || lastSuccessfulInteractionResponseAt > rateLimit.last_limited_at));
   res.set('Cache-Control', 'no-store');
   res.status(discordConnected ? 200 : 503).json({
-    status: discordConnected && !discordRateLimit.snapshot().global_retry_after_ms ? 'healthy' : 'degraded',
-    discord_rate_limit: discordRateLimit.snapshot(),
+    status: !discordConnected || rateLimit.global_retry_after_ms ? 'degraded' : interactionVerified ? 'healthy' : 'awaiting_interaction',
+    discord_rate_limit: rateLimit,
+    discord_interaction_response: { last_success_at: lastSuccessfulInteractionResponseAt, verified_after_latest_limit: interactionVerified },
     discord_rest_recovery: discordRestRecovery.snapshot(),
     discord_connected: discordConnected,
     bot_id: client.user?.id || null,
@@ -115,6 +120,7 @@ const client = new Client({
     api: DISCORD_API_BASE,
     timeout: 15_000,
     retries: 2,
+    rejectOnRateLimit: ['/interactions', '/webhooks'],
   },
   intents: [
     GatewayIntentBits.Guilds,
@@ -227,58 +233,27 @@ function assertDiscordRequestAllowed(route) {
   }
 }
 
-async function directInteractionRestRequest(method, route, options = {}) {
-  const rateLimitKey = interactionRateLimitKey(route);
-  assertDiscordRequestAllowed(route);
-  const query = options.query ? `?${new URLSearchParams(options.query).toString()}` : "";
-  const controller = new AbortController();
-  const isInitialResponse = /^\/interactions\/\d+\/[^/]+\/callback$/.test(String(route || ""));
-  // Discord wymaga pierwszej odpowiedzi w ok. 3 sekundy. Nie pozwalamy,
-  // żeby pojedyncza zawieszona próba udawała sukces przez dłuższy czas.
-  const timeoutId = setTimeout(() => controller.abort(), isInitialResponse ? 2_500 : 5_000);
-  try {
-    const response = await fetch(`${DISCORD_API_BASE}/v10${route}${query}`, {
-        method,
-        headers: options.body === undefined ? undefined : { "content-type": "application/json" },
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        signal: controller.signal,
-    });
-    discordRateLimit.recordResponse('interaction-rest', response);
-    const text = await response.text();
-    let data = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch (_) {
-        data = text;
-      }
-    }
-    if (!response.ok) {
-      const retryAfterMs = discordRateLimit.observe(rateLimitKey, response, data, { authenticated: false });
-      const error = new Error(
-        `Discord interaction HTTP ${response.status} via ${new URL(DISCORD_API_BASE).hostname}`,
-      );
-      error.status = response.status;
-      error.retryAfterMs = retryAfterMs;
-      error.code = data?.code || response.status;
-      error.responseBody = typeof data === "string" ? data.slice(0, 200) : data;
-      throw error;
-    }
-    return data;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 for (const methodName of ["post", "patch", "delete"]) {
   const originalMethod = client.rest[methodName].bind(client.rest);
   client.rest[methodName] = async (route, options = {}) => {
     assertDiscordRequestAllowed(route);
-    // Pliki wymagają multipart i pozostają w standardowym kliencie REST.
-    if (isInteractionResponseRoute(route) && !options.files?.length) {
-      return directInteractionRestRequest(methodName.toUpperCase(), route, options);
+    const interactionResponse = isInteractionResponseRoute(route);
+    const initialResponse = String(route).startsWith('/interactions/');
+    try {
+      // Keep discord.js serialization, multipart, User-Agent and bucket handling.
+      // Initial responses must not sit in a retry loop beyond Discord's deadline.
+      return await originalMethod(route, initialResponse
+        ? { ...options, signal: options.signal || AbortSignal.timeout(2500) }
+        : options);
+    } catch (error) {
+      if (interactionResponse && String(error?.name).startsWith('RateLimitError[')) {
+        const retryAfterMs = discordRateLimit.block(interactionRateLimitKey(route), error.retryAfter);
+        // SDK errors contain token-bearing URLs; never pass them to application logs.
+        throw Object.assign(new Error('Discord interaction rate limited; retry stopped.'),
+          { status: 429, code: 429, retryAfterMs });
+      }
+      throw error;
     }
-    return originalMethod(route, options);
   };
 }
 const originalClientRestPut = client.rest.put.bind(client.rest);
@@ -291,9 +266,14 @@ function trackDiscordRestRateLimits(restClient) {
     if (data.global) discordRateLimit.block('bot-rest', data.retryAfter, true);
   });
   restClient.on('response', async (request, response) => {
-    discordRateLimit.recordResponse(restClient === client.rest ? 'bot-rest' : 'registration-rest', response);
-    if (response.status !== 429) return;
     const route = request.path || request.route || '';
+    const interactionResponse = isInteractionResponseRoute(route);
+    discordRateLimit.recordResponse(restClient === client.rest
+      ? interactionResponse ? 'interaction-rest' : 'bot-rest' : 'registration-rest', response);
+    if (restClient === client.rest && interactionResponse && response.status >= 200 && response.status < 300) {
+      lastSuccessfulInteractionResponseAt = new Date().toISOString();
+    }
+    if (response.status !== 429) return;
     const authenticated = request.data?.auth ?? !isInteractionResponseRoute(route);
     let data = null;
     try { data = await response.clone().json(); } catch (_) { /* Headers still describe the SDK limit. */ }

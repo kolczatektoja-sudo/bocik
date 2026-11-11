@@ -5,17 +5,18 @@ const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '..', 'index.cjs'), 'utf8');
 
-function health(ready, retryAfter = 0) {
+function health(ready, retryAfter = 0, lastSuccess = '2026-11-11T20:00:00.000Z', lastLimitedAt = null) {
   let handler;
   const context = vm.createContext({
     app: { get: (_route, callback) => { handler = callback; } },
     client: { isReady: () => ready, ws: { ping: 42 } },
-    discordRateLimit: { snapshot: () => ({ global_retry_after_ms: retryAfter }) },
+    discordRateLimit: { snapshot: () => ({ global_retry_after_ms: retryAfter, last_limited_at: lastLimitedAt }) },
     discordRestRecovery: { snapshot: () => ({ probe_scheduled: retryAfter > 0 }) },
     DISCORD_API_BASE: 'https://discord.com/api',
     ENABLE_HEAVY_STARTUP_SYNC: false,
     discordApplicationDiagnostic: {}, lastGatewayEventDiagnostic: {},
     lastDiscordLoginDiagnostic: {}, lastInteractionDiagnostic: {},
+    lastSuccessfulInteractionResponseAt: lastSuccess,
     process: { env: {} },
   });
   const start = source.indexOf("app.get('/health',");
@@ -42,4 +43,11 @@ test('temporary API cooldown remains visible without triggering hosting restart 
   assert.equal(limited.code, 200);
   assert.equal(limited.body.status, 'degraded');
   assert.equal(limited.body.discord_rate_limit.global_retry_after_ms, 60000);
+});
+
+test('authenticated REST recovery never proves interaction callbacks recovered', () => {
+  assert.equal(health(true, 0, null).body.status, 'awaiting_interaction');
+  const stale = health(true, 0, '2026-11-11T19:00:00.000Z', '2026-11-11T19:20:00.000Z');
+  assert.equal(stale.body.discord_interaction_response.verified_after_latest_limit, false);
+  assert.equal(stale.body.status, 'awaiting_interaction');
 });
