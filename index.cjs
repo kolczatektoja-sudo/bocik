@@ -166,7 +166,10 @@ const discordRestRecovery = createDiscordRecovery({
   gate: discordRateLimit,
   async probe() {
     const response = await fetch(`${DISCORD_API_BASE}/v10/users/@me`, {
-      headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` },
+      headers: {
+        Authorization: `Bot ${process.env.BOT_TOKEN}`,
+        'User-Agent': 'DiscordBot (https://github.com/discordjs/discord.js, 14.14.1)',
+      },
       signal: AbortSignal.timeout(5000),
     });
     discordRateLimit.recordResponse('bot-rest', response);
@@ -20718,36 +20721,30 @@ async function handleSprawdzKogoZaprosilCommand(interaction) {
       return;
     }
 
-    // Pobierz aktualnych członków serwera
-    const guildMembers = await guild.members.fetch();
-    const currentMemberIds = new Set(guildMembers.keys());
-
-    // Filtruj tylko osoby które są nadal na serwerze
+    // Sprawdź tylko zaproszonych użytkowników (zamiast pobierać całą bazę członków serwera przez HTTP)
     let invitedList = [];
+    const twoMonthsAgo = new Date(Date.now() - (60 * 24 * 60 * 60 * 1000)); // 60 dni
 
     for (const invitedUser of invitedUsers) {
       try {
-        // Sprawdź czy użytkownik jest nadal na serwerze
-        if (currentMemberIds.has(invitedUser.invited_user_id)) {
-          const member = guildMembers.get(invitedUser.invited_user_id);
+        const member = guild.members.cache.get(invitedUser.invited_user_id) ||
+          await guild.members.fetch(invitedUser.invited_user_id).catch(() => null);
+        if (!member) continue;
 
-          // Sprawdź czy konto ma więcej niż 2 miesiące
-          const accountAge = member.user.createdAt;
-          const twoMonthsAgo = new Date(Date.now() - (60 * 24 * 60 * 60 * 1000)); // 60 dni
+        // Sprawdź czy konto ma więcej niż 2 miesiące
+        const accountAge = member.user?.createdAt;
+        if (accountAge && accountAge > twoMonthsAgo) {
+          const joinedDate = invitedUser.created_at ?
+            new Date(invitedUser.created_at).toLocaleDateString('pl-PL') :
+            'Nieznana data';
 
-          if (accountAge && accountAge > twoMonthsAgo) {
-            const joinedDate = invitedUser.created_at ?
-              new Date(invitedUser.created_at).toLocaleDateString('pl-PL') :
-              'Nieznana data';
-
-            invitedList.push({
-              user: member.user,
-              date: joinedDate
-            });
-          }
+          invitedList.push({
+            user: member.user,
+            date: joinedDate
+          });
         }
       } catch (err) {
-        // Użytkownik opuścił serwer lub konto za młode - nie dodajemy do listy
+        // Użytkownik opuścił serwer lub błąd - pomiń
         continue;
       }
     }

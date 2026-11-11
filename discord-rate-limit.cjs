@@ -49,13 +49,17 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
     lastLimit = null;
     notify();
   }
+  const MAX_RESTORED_WAIT_MS = 60_000;
   function restoreState(state) {
     if (!state || state.version !== 1) return;
     if (state.resetCooldown || initialState?.resetCooldown) {
       reset();
       return;
     }
-    const deadline = value => Number.isFinite(value) && value > now() ? value : 0;
+    const deadline = value => {
+      if (!Number.isFinite(value) || value <= now()) return 0;
+      return Math.min(value, now() + MAX_RESTORED_WAIT_MS);
+    };
     globalUntil = Math.max(globalUntil, deadline(state.globalUntil));
     ipUntil = Math.max(ipUntil, deadline(state.ipUntil));
     for (const entry of Array.isArray(state.routes) ? state.routes : []) {

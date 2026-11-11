@@ -88,8 +88,15 @@ function createBotMonitoring({ client, events = {}, webhookUrl, monitorUrl, foot
     const controller = new AbortController();
     const timeout = timers.setTimeout(() => controller.abort(), 4000);
     try {
-      const response = await fetchImpl(url, { method, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body), signal: controller.signal });
+      const response = await fetchImpl(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'DiscordBot (https://github.com/discordjs/discord.js, 14.14.1)',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
       rateLimitGate.recordResponse?.('monitoring-webhook', response);
       if (!response.ok) {
         const data = response.status === 429 ? await response.json().catch(() => null) : null;
