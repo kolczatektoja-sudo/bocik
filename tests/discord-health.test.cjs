@@ -11,6 +11,7 @@ function health(ready, retryAfter = 0) {
     app: { get: (_route, callback) => { handler = callback; } },
     client: { isReady: () => ready, ws: { ping: 42 } },
     discordRateLimit: { snapshot: () => ({ global_retry_after_ms: retryAfter }) },
+    discordRestRecovery: { snapshot: () => ({ probe_scheduled: retryAfter > 0 }) },
     DISCORD_API_BASE: 'https://discord.com/api',
     ENABLE_HEAVY_STARTUP_SYNC: false,
     discordApplicationDiagnostic: {}, lastGatewayEventDiagnostic: {},

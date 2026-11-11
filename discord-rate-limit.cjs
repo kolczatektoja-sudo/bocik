@@ -53,6 +53,7 @@ function createDiscordRateLimitGate({ now = Date.now, fallbackMs = 60_000, initi
     }
     if (typeof state.lastLimitedAt === 'string') lastLimitedAt = state.lastLimitedAt;
     if (state.lastLimit && typeof state.lastLimit === 'object') lastLimit = state.lastLimit;
+    notify();
   }
   restoreState(initialState);
   function snapshot() {

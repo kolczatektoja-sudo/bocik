@@ -36,6 +36,7 @@ const { editContestWithGif, repairContestGifs } = require("./contest-gif.cjs");
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://canary.discord.com/api";
 const ENABLE_HEAVY_STARTUP_SYNC = process.env.ENABLE_HEAVY_STARTUP_SYNC === "true";
 const { createDiscordRateLimitGate } = require("./discord-rate-limit.cjs");
+const { createDiscordRecovery } = require("./discord-recovery.cjs");
 // Carry the currently reported Retry-After across this deployment; expired seeds are ignored.
 const discordRateLimit = createDiscordRateLimitGate({ initialState: require("./discord-rate-limit-bootstrap.json") });
 
@@ -78,6 +79,7 @@ app.get('/health', (req, res) => {
   res.status(discordConnected ? 200 : 503).json({
     status: discordConnected && !discordRateLimit.snapshot().global_retry_after_ms ? 'healthy' : 'degraded',
     discord_rate_limit: discordRateLimit.snapshot(),
+    discord_rest_recovery: discordRestRecovery.snapshot(),
     discord_connected: discordConnected,
     bot_id: client.user?.id || null,
     bot_tag: client.user?.tag || null,
@@ -130,6 +132,25 @@ const client = new Client({
     Partials.Reaction,
     Partials.User,
   ]
+});
+
+const discordRestRecovery = createDiscordRecovery({
+  gate: discordRateLimit,
+  async probe() {
+    discordRateLimit.assertAllowed('bot-rest');
+    const response = await fetch(`${DISCORD_API_BASE}/v10/users/@me`, {
+      headers: { Authorization: `Bot ${process.env.BOT_TOKEN}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    discordRateLimit.recordResponse('bot-rest', response);
+    if (response.status === 429) {
+      const data = await response.json().catch(() => null);
+      discordRateLimit.observe('bot-rest', response, data);
+    } else {
+      await response.body?.cancel?.();
+    }
+    if (!response.ok) throw Object.assign(new Error('Discord REST recovery probe failed'), { status: response.status });
+  },
 });
 
 const { createBotMonitoring } = require("./bot-monitoring.cjs");
