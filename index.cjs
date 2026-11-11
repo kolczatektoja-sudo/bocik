@@ -110,6 +110,28 @@ app.get('/', (req, res) => {
   );
 });
 
+app.get('/diag', async (req, res) => {
+  const targets = [
+    'https://discord.com/api/v10/gateway',
+    'https://canary.discord.com/api/v10/gateway',
+    'https://ptb.discord.com/api/v10/gateway',
+  ];
+  const results = {};
+  for (const url of targets) {
+    try {
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'DiscordBot (https://github.com/discordjs/discord.js, 14.14.1)' },
+        signal: AbortSignal.timeout(4000),
+      });
+      const text = await resp.text();
+      results[url] = { status: resp.status, body: text.slice(0, 200) };
+    } catch (e) {
+      results[url] = { error: e.message };
+    }
+  }
+  res.json(results);
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[HTTP] Serwer Express pomyślnie uruchomiony na porcie ${PORT} (0.0.0.0)!`);
 });
