@@ -32,6 +32,7 @@ const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { editContestWithGif, repairContestGifs } = require("./contest-gif.cjs");
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://canary.discord.com/api";
 const ENABLE_HEAVY_STARTUP_SYNC = process.env.ENABLE_HEAVY_STARTUP_SYNC === "true";
 const { createDiscordRateLimitGate } = require("./discord-rate-limit.cjs");
@@ -7318,6 +7319,9 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[READY] Bot jest online i gotowy do pracy!`);
 
   await persistentStateReady;
+
+  // Napraw tylko zapisane konkursy, bez skanowania historii kanałów.
+  repairContestGifs(c, contests).catch(error => console.error("[contests] GIF repair:", error));
 
   // Timer wraca po wczytaniu stanu także w trybie core, przed jego early return.
   scheduleRandomAutoLegitCheck();
@@ -26921,6 +26925,7 @@ async function handleKonkursCreateModal(interaction) {
   } catch (err) {
     console.warn("Nie udało się załadować GIFa przy tworzeniu konkursu:", err);
     // Fallback: wyślij bez GIFa
+    embed.setImage(null);
     const row = new ActionRowBuilder().addComponents(joinBtn);
     sent = await targetChannel.send({
       embeds: [embed],
@@ -27128,6 +27133,7 @@ async function handleKonkursCreateModal(interaction) {
   } catch (err) {
     console.warn("Nie udało się załadować GIFa przy tworzeniu konkursu:", err);
     // Fallback: wyślij bez GIFa
+    embed.setImage(null);
     const row = new ActionRowBuilder().addComponents(joinBtn);
     sent = await targetChannel.send({
       embeds: [embed],
@@ -27326,30 +27332,10 @@ async function handleKonkursJoinDirect(interaction, msgId) {
           .setDisabled(false);
         const row = new ActionRowBuilder().addComponents(joinButton);
 
-        // Edytuj wiadomość - usuń stare załączniki i dodaj ten sam GIF ponownie
-        try {
-          const gifPath = path.join(
-            __dirname,
-            "attached_assets",
-            "standard (4).gif",
-          );
-          const attachment = new AttachmentBuilder(gifPath, { name: "konkurs_start.gif" });
-          existingEmbed.setImage("attachment://konkurs_start.gif");
-
-          await origMsg.edit({
-            embeds: [existingEmbed],
-            components: [row],
-            files: [attachment]
-          }).catch(() => null);
-        } catch (err) {
-          console.warn("Nie udało się załadować GIFa przy edycji konkursu:", err);
-          // Fallback: usuń załączniki bez GIFa
-          await origMsg.edit({
-            embeds: [existingEmbed],
-            components: [row],
-            attachments: []
-          }).catch(() => null);
-        }
+        await editContestWithGif(origMsg, {
+          embeds: [existingEmbed],
+          components: [row],
+        });
       }
     }
   } catch (e) {
@@ -27699,30 +27685,10 @@ async function handleKonkursLeave(interaction, msgId) {
           .setDisabled(false);
         const row = new ActionRowBuilder().addComponents(joinButton);
 
-        // Edytuj wiadomość - usuń stare załączniki i dodaj ten sam GIF ponownie
-        try {
-          const gifPath = path.join(
-            __dirname,
-            "attached_assets",
-            "standard (4).gif",
-          );
-          const attachment = new AttachmentBuilder(gifPath, { name: "konkurs_start.gif" });
-          embed.image = { url: "attachment://konkurs_start.gif" };
-
-          await origMsg.edit({
-            embeds: [embed],
-            components: [row],
-            files: [attachment]
-          }).catch(() => null);
-        } catch (err) {
-          console.warn("Nie udało się załadować GIFa przy edycji konkursu (leave):", err);
-          // Fallback: usuń załączniki bez GIFa
-          await origMsg.edit({
-            embeds: [embed],
-            components: [row],
-            attachments: []
-          }).catch(() => null);
-        }
+        await editContestWithGif(origMsg, {
+          embeds: [embed],
+          components: [row],
+        });
       }
     }
   } catch (e) {
