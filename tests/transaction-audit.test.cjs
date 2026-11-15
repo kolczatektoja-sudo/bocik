@@ -130,7 +130,7 @@ test('cleanup requires a delivered backup and only removes our backed-up old aud
     ['summary', { id: 'summary', author: { id: seller }, embeds: [{ footer: { text: 'transaction-audit-summary:v1' } }], delete: async () => { throw new Error('SUMMARY DELETE'); } }],
   ]);
   let data = { kind: 'transaction-audit-v1', entries: {}, history: {}, summary: { backupPublished: false }, legacyBackup: [...messages.keys()].map(id => ({ id })) };
-  const channel = { id: AUDIT_CHANNEL_ID, guildId: GUILD_ID, client: { user: { id: seller } }, messages: { fetch: async id => messages.get(id) } };
+  const channel = { id: AUDIT_CHANNEL_ID, guildId: GUILD_ID, client: { user: { id: seller } }, messages: { fetch: async arg => { if (typeof arg === 'string') return messages.get(arg); const result=new Map(messages); result.last=()=>[...result.values()].at(-1); return result; } } };
   const make = () => createTransactionAudit({ load: async () => structuredClone(data), save: async value => { data = structuredClone(value); },
     cleanupLegacyEnabled: true, getChannel: async () => channel, sleep: async () => {} });
   await assert.rejects(make().cleanupLegacy(), /AUDIT_BACKUP_REQUIRED/);

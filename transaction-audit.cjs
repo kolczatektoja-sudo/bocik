@@ -240,16 +240,37 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
     // footer, our bot author and the backed-up IDs. Never touch source LC channels.
     if (channel.id !== AUDIT_CHANNEL_ID || channel.guildId !== GUILD_ID) throw new Error('AUDIT_CLEANUP_WRONG_CHANNEL');
     const progress = state.legacyCleanup ||= { removed: 0, skipped: 0, completedIds: {}, done: false };
+    const backedUp = new Set(state.legacyBackup.map(m => m.id));
+    const found = new Map();
+    let before;
+    do {
+      await wait();
+      const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+      if (!batch.size) break;
+      for (const message of batch.values()) if (backedUp.has(message.id)) found.set(message.id,message);
+      before=batch.last().id;
+      if (batch.size<100) break;
+    } while(before);
+    const eligible=[];
     for (const previous of state.legacyBackup) {
       if (progress.completedIds[previous.id]) continue;
+      const message=found.get(previous.id);
+      if (message?.author?.id===channel.client.user.id && message.embeds?.some(e=>e.footer?.text?.startsWith('transaction-audit:'))) eligible.push(message);
+      else { progress.skipped++; progress.completedIds[previous.id]=true; }
+    }
+    const recent=eligible.filter(m=>m.createdTimestamp>Date.now()-13*86400000);
+    const older=eligible.filter(m=>!recent.includes(m));
+    while(recent.length){
+      const batch=recent.splice(0,100);
       await wait();
-      let message;
-      try { message = await channel.messages.fetch(previous.id); }
-      catch (error) { if (error.code !== 10008) throw error; }
-      if (message?.author?.id === channel.client.user.id && message.embeds?.some(e => e.footer?.text?.startsWith('transaction-audit:'))) {
-        await wait(); await message.delete(); progress.removed++;
-      } else progress.skipped++;
-      progress.completedIds[previous.id] = true;
+      if(batch.length>=2 && typeof channel.bulkDelete==='function'){
+        const deleted=await channel.bulkDelete(batch.map(m=>m.id),true);
+        for(const m of batch) if(deleted.has(m.id)){progress.removed++;progress.completedIds[m.id]=true;} else older.push(m);
+      } else older.push(...batch);
+      await exclusive(persist);
+    }
+    for(const message of older){
+      await wait(); await message.delete(); progress.removed++; progress.completedIds[message.id]=true;
       await exclusive(persist);
     }
     progress.done = true;
