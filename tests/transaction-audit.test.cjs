@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTransactionAudit, fromHumanRep, fromPurchase, fromTranscript, normalizeRecord, money, payload } = require('../transaction-audit.cjs');
+const { createTransactionAudit, fromHumanRep, fromPurchase, fromTranscript, normalizeRecord, money, payload, reportRecord, csv, OWNER_ID } = require('../transaction-audit.cjs');
 const buyer = '1305200545979437129', seller = '1449397101032112139', guild = '1350446732365926491';
 const now = '2026-11-15T15:00:00.000Z';
 const purchase = { id: 17, user_id: buyer, price: 25, type: 'zakup', server: 'Anarchia LF', created_at: now };
@@ -65,10 +65,12 @@ function fixture(initial) {
   const sent = new Map();
   let writes = 0;
   const channel = { client: { user: { id: seller } }, messages: {
-    async fetch() { const m = new Map(sent); m.last = () => [...m.values()].at(-1); return m; },
+    async fetch(options) { if (typeof options === 'string') return sent.get(options);
+      const m = new Map(sent); m.last = () => [...m.values()].at(-1); return m; },
   }, async send(data) {
     if (failSend) throw new Error('send-failed');
-    const m = { id: String(sent.size + 1), author: { id: seller }, embeds: data.embeds };
+    const m = { id: String(sent.size + 1), author: { id: seller }, embeds: data.embeds, files: data.files,
+      async edit(next) { if (failSend) throw new Error('send-failed'); this.embeds = next.embeds; this.files = next.files; return this; } };
     sent.set(m.id, m); return m;
   } };
   const storage = {
@@ -86,8 +88,8 @@ test('duplicate events, restart and send/save interruption never duplicate cards
   await audit.run(); assert.equal(f.sent.size, 1);
   audit = f.make(); await audit.run(); assert.equal(f.sent.size, 1);
   const other = { ...row(), key: 'other' }; await audit.record(other);
-  f.setSaveFail(true); await audit.run(); assert.equal(f.sent.size, 2);
-  f.setSaveFail(false); audit = f.make(); await audit.run(); assert.equal(f.sent.size, 2);
+  f.setSaveFail(true); await audit.run(); assert.equal(f.sent.size, 1);
+  f.setSaveFail(false); audit = f.make(); await audit.run(); assert.equal(f.sent.size, 1);
 });
 test('failed read never overwrites ledger; retry preserves pending event', async () => {
   const f = fixture(); f.setLoadFail(true); const audit = f.make();
@@ -109,8 +111,15 @@ test('distinct database records without message IDs are retained and never merge
   assert.equal(audit.snapshot().records, 2);
   await audit.run();
   assert.equal(f.sent.size, 1);
-  assert.equal([...f.sent.values()][0].embeds.length, 2);
+  assert.equal([...f.sent.values()][0].embeds.length, 1);
   assert.equal(audit.snapshot().published, 2);
+});
+test('owner is separated from customer records and CSV preserves exact IDs without formula injection', () => {
+  assert.equal(reportRecord({ ...row(), buyerId: OWNER_ID }).partyRole, 'właściciel / wpis wewnętrzny');
+  assert.equal(reportRecord({ ...row(), buyerId: '123456789012345678' }).partyRole, 'klient');
+  const output = csv([{ ...row(), amountCents: 2500, buyerName: '=DANGEROUS()', buyerId: OWNER_ID }]);
+  assert.ok(output.includes("'=DANGEROUS()"));
+  assert.ok(output.includes("'"+OWNER_ID));
 });
 test('read-only history import matches human evidence and never invokes source mutation', async () => {
   let saved;

@@ -3,9 +3,31 @@ const { createHash } = require('node:crypto');
 const AUDIT_CHANNEL_ID = '1571279387137933322';
 const AUDIT_ROW_ID = 6;
 const GUILD_ID = '1350446732365926491';
+const OWNER_ID = '1305200545979437129';
 const id = value => /^\d{16,22}$/.test(String(value || '')) ? String(value) : null;
 const norm = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 const cut = (value, n = 900) => String(value || 'nie zapisano').slice(0, n);
+function reportRecord(entry) {
+  const { messageId, ...record } = entry;
+  return { ...record, partyRole: record.buyerId === OWNER_ID ? 'właściciel / wpis wewnętrzny' : 'klient' };
+}
+function csv(entries) {
+  const columns = [
+    ['ID wpisu','key'], ['ID transakcji','transactionId'], ['ID rekordu bazy','purchaseId'], ['Rola użytkownika','partyRole'],
+    ['ID użytkownika','buyerId'], ['Użytkownik','buyerName'], ['ID obsługi','sellerId'], ['Obsługa','sellerName'],
+    ['Typ','type'], ['Kwota PLN',e => (e.amountCents / 100).toFixed(2).replace('.',',')],
+    ['Data zdarzenia UTC','occurredAt'], ['Data zapisania UTC','recordedAt'], ['Serwer','server'],
+    ['Metoda płatności z ticketu','paymentMethod'], ['Źródło','sourceUrl'], ['Opis źródła','evidence'],
+    ['Wpłata niezależnie zweryfikowana',() => 'NIE'],
+  ];
+  const cell = value => {
+    let text = String(value ?? '');
+    if (/^[=+\-@\t\r\n]/.test(text) || /^\d{16,}$/.test(text)) text = "'" + text;
+    return '"' + text.replace(/"/g, '""') + '"';
+  };
+  return '\uFEFF' + [columns.map(c => cell(c[0])).join(';'), ...entries.map(e =>
+    columns.map(c => cell(typeof c[1] === 'function' ? c[1](e) : e[c[1]])).join(';'))].join('\r\n');
+}
 function money(value) {
   const match = String(value ?? '').replace(/\s/g, '').match(/^(\d+)(?:[.,](\d{1,2}))?(?:PLN|zł)?$/i);
   if (!match) return null;
@@ -83,7 +105,7 @@ function fromTranscript(text, message, rows) {
 }
 function payload(record) {
   const user = (uid, name) => uid ? `<@${uid}>\nID: \`${uid}\`${name ? `\n${cut(name, 100)}` : ''}` : 'Nie zapisano';
-  const label = record.type === 'zakup' ? 'Zakup klienta' : 'Sprzedaż klienta do sklepu';
+  const label = record.buyerId === OWNER_ID ? 'Wpis właściciela — wewnętrzny' : record.type === 'zakup' ? 'Zakup klienta' : 'Sprzedaż klienta do sklepu';
   const kinds = { 'staff-completion': 'Zgłoszenie realizacji przez obsługę', 'customer-rep': 'Potwierdzenie +rep od klienta',
     'anonymous-ticket': 'Anonimowy LC powiązany z ticketem', 'history-customer-rep': 'Import: wiadomość klienta i historia zakupów',
     'history-ticket-archive': 'Import: archiwum ticketu', 'history-database': 'Import: zachowana historia zakupów z /ticket-zakoncz' };
@@ -138,14 +160,9 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
     await sleep(Math.max(1500, cooldown() + 200));
     if (cooldown() > 0) throw Object.assign(new Error('AUDIT_COOLDOWN'), { localCooldown: true });
   }
-  async function publish() {
-    // Pause individual-card publication; retain and continue recovering the ledger.
-    return;
-    await init();
-    if (!Object.values(state.entries).some(e => !e.messageId)) return;
-    const channel = await getChannel();
-    // Reconcile a successful send followed by a failed DB save without posting duplicates.
-    const existing = new Map();
+  async function scanLegacy(channel) {
+    if (state.legacyBackup) return;
+    const legacy = [];
     let before;
     do {
       await wait();
@@ -153,36 +170,64 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
       if (!batch.size) break;
       for (const message of batch.values()) {
         if (message.author?.id !== channel.client.user.id) continue;
-        for (const embed of message.embeds || []) {
-          const footer = embed.footer?.text || '';
-          if (footer.startsWith('transaction-audit:')) existing.set(footer.slice(18), message.id);
+        if (message.embeds?.some(e => e.footer?.text?.startsWith('transaction-audit:'))) {
+          legacy.push({ id: message.id, createdTimestamp: message.createdTimestamp,
+            content: message.content || '', embeds: message.embeds.map(e => e.toJSON ? e.toJSON() : e) });
         }
       }
       before = batch.last().id;
       if (batch.size < 100) break;
     } while (before);
-    const unsent = Object.values(state.entries).filter(entry => !entry.messageId);
-    while (unsent.length) {
-      await exclusive(async () => {
-        const group = [], embeds = [];
-        let size = 0;
-        while (unsent.length && group.length < 3) {
-          const entry = unsent[0];
-          if (existing.has(entry.key)) { entry.messageId = existing.get(entry.key); unsent.shift(); continue; }
-          const embed = payload(entry).embeds[0];
-          const length = (embed.title?.length || 0) + (embed.description?.length || 0) + (embed.footer?.text?.length || 0) +
-            embed.fields.reduce((sum, f) => sum + f.name.length + f.value.length, 0);
-          if (group.length && size + length > 5800) break;
-          group.push(entry); embeds.push(embed); size += length; unsent.shift();
-        }
-        if (group.length) {
-          await wait();
-          const message = await channel.send({ embeds, allowedMentions: { parse: [] } });
-          for (const entry of group) entry.messageId = message.id;
-        }
-        await persist();
-      });
+    state.legacyBackup = legacy;
+    await exclusive(persist);
+  }
+  async function publish() {
+    await init();
+    const channel = await getChannel();
+    await scanLegacy(channel);
+    const entries = Object.values(state.entries).map(reportRecord);
+    const complete = Boolean(state.databaseHistory?.done && Object.values(state.history).length &&
+      Object.values(state.history).every(p => p?.done));
+    const signature = createHash('sha256').update(JSON.stringify({ entries, complete })).digest('hex');
+    if (state.summary?.signature === signature) return;
+    let message;
+    if (state.summary?.messageId) {
+      try { message = await channel.messages.fetch(state.summary.messageId); }
+      catch (error) { if (error.code !== 10008) throw error; }
     }
+    if (!message) {
+      await wait();
+      const recent = await channel.messages.fetch({ limit: 100 });
+      message = [...recent.values()].find(m => m.author?.id === channel.client.user.id &&
+        m.embeds?.some(e => e.footer?.text === 'transaction-audit-summary:v1'));
+    }
+    const customers = entries.filter(e => e.partyRole === 'klient');
+    const internal = entries.filter(e => e.partyRole === 'właściciel / wpis wewnętrzny');
+    const data = {
+      allowedMentions: { parse: [] },
+      embeds: [{ title: '📒 Historia transakcji — pliki i podsumowanie', color: 0x4377ff,
+        description: 'Pełne szczegóły znajdziesz w załącznikach. Ten panel aktualizuje się w miejscu — bez osobnych wiadomości dla każdego zakupu.',
+        fields: [
+          { name: 'Rekordy klientów', value: String(customers.length), inline: true },
+          { name: 'Wpisy właściciela / wewnętrzne', value: `${internal.length} — osobny plik, poza rejestrem klientów`, inline: true },
+          { name: 'Historia', value: complete ? 'Import zakończony' : 'Import archiwum trwa; załączniki będą uzupełniane' },
+          { name: 'Co zawiera CSV', value: 'ID użytkownika, kwota, data, serwer, obsługa i źródło — jeśli zachowano te dane.' },
+          { name: 'Weryfikacja', value: 'Zapis zgłoszeń i zdarzeń bota. Nie jest niezależnym potwierdzeniem otrzymania pieniędzy. Etapy jednego zakupu mają wspólne ID.' },
+        ], footer: { text: 'transaction-audit-summary:v1' }, timestamp: new Date().toISOString() }],
+      attachments: [],
+      files: [
+        { attachment: Buffer.from(csv(customers), 'utf8'), name: 'historia-transakcji-klientow.csv' },
+        { attachment: Buffer.from(csv(internal), 'utf8'), name: 'wpisy-wlasciciela-wewnetrzne.csv' },
+        { attachment: Buffer.from(JSON.stringify({ exportedAt: new Date().toISOString(), entries,
+          originalAuditCardsBackup: state.legacyBackup, history: state.history }, null, 2), 'utf8'), name: 'rejestr-i-kopia-poprzednich-wpisow.json' },
+      ],
+    };
+    await wait();
+    message = message ? await message.edit(data) : await channel.send(data);
+    state.summary = { messageId: message.id, signature, backupPublished: true,
+      customerRecords: customers.length, internalRecords: internal.length };
+    for (const entry of Object.values(state.entries)) entry.messageId = message.id;
+    await exclusive(persist);
   }
   async function importHistory() {
     await init();
@@ -248,6 +293,6 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
   }
   return { record, run, snapshot: () => ({ initialized: Boolean(state), running, pending: pending.size, records: state ? Object.keys(state.entries).length : 0,
     published: state ? Object.values(state.entries).filter(e => e.messageId).length : 0,
-    history: state?.history || {}, databaseHistory: state?.databaseHistory || null, lastError }) };
+    history: state?.history || {}, databaseHistory: state?.databaseHistory || null, summary: state?.summary || null, legacyCards: state?.legacyBackup?.length || 0, lastError }) };
 }
-module.exports = { AUDIT_CHANNEL_ID, AUDIT_ROW_ID, GUILD_ID, money, normalizeRecord, parseRep, fromHumanRep, fromPurchase, fromTranscript, payload, createTransactionAudit };
+module.exports = { AUDIT_CHANNEL_ID, AUDIT_ROW_ID, GUILD_ID, OWNER_ID, reportRecord, csv, money, normalizeRecord, parseRep, fromHumanRep, fromPurchase, fromTranscript, payload, createTransactionAudit };
