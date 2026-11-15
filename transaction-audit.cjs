@@ -139,6 +139,8 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
     if (cooldown() > 0) throw Object.assign(new Error('AUDIT_COOLDOWN'), { localCooldown: true });
   }
   async function publish() {
+    // Pause individual-card publication; retain and continue recovering the ledger.
+    return;
     await init();
     if (!Object.values(state.entries).some(e => !e.messageId)) return;
     const channel = await getChannel();
