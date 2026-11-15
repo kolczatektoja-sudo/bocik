@@ -215,6 +215,11 @@ const transactionAudit = createTransactionAudit({
 
 function recordTicketTransaction(channel, pending, meta, phase, evidenceMessage = null, actorId = null) {
   if (!pending || pending.isTest || !channel?.guildId) return;
+  const timestamp = evidenceMessage?.createdTimestamp ?? pending.ts;
+  if (!Number.isFinite(Number(timestamp))) {
+    console.log('[TRANSACTION_AUDIT] Pomijam wpis bez zapisanej daty źródłowej.');
+    return;
+  }
   // This observer never deletes/edits a source message and cannot fail the +rep handler.
   transactionAudit.record({
     key: `${pending.auditKey || `ticket:${channel.id}:${pending.ts}`}:${phase}`,
@@ -224,7 +229,7 @@ function recordTicketTransaction(channel, pending, meta, phase, evidenceMessage 
     sellerId: pending.commandUserId, sellerName: pending.commandUsername,
     type: pending.typ, amount: pending.co, server: pending.serwer,
     paymentMethod: meta?.paymentMethod || null,
-    occurredAt: evidenceMessage ? new Date(evidenceMessage.createdTimestamp).toISOString() : new Date(pending.ts).toISOString(),
+    occurredAt: new Date(Number(timestamp)).toISOString(),
     sourceUrl: evidenceMessage?.url || `https://discord.com/channels/${channel.guildId}/${channel.id}/${pending.embedMessageId}`,
     sourceMessageId: evidenceMessage?.id || pending.embedMessageId,
     sourceKind: phase,
