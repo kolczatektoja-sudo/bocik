@@ -125,7 +125,7 @@ function payload(record) {
   }] };
 }
 function createTransactionAudit({ load, save, getChannel, getSources, readPurchases, cooldown = () => 0,
-  readTranscript, log = () => {}, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  readTranscript, cleanupLegacyEnabled = false, log = () => {}, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   let state, initialized, chain = Promise.resolve(), running = false, lastError = null;
   const pending = new Map();
   const exclusive = fn => { const task = chain.then(fn); chain = task.catch(() => {}); return task; };
@@ -224,9 +224,35 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
     };
     await wait();
     message = message ? await message.edit(data) : await channel.send(data);
-    state.summary = { messageId: message.id, signature, backupPublished: true,
+    state.summary = { messageId: message.id, signature,
+      backupPublished: Boolean(message.attachments?.some?.(a => a.name === 'rejestr-i-kopia-poprzednich-wpisow.json')),
       customerRecords: customers.length, internalRecords: internal.length };
     for (const entry of Object.values(state.entries)) entry.messageId = message.id;
+    await exclusive(persist);
+  }
+  async function cleanupLegacy() {
+    if (!cleanupLegacyEnabled) return;
+    await init();
+    if (state.legacyCleanup?.done) return;
+    if (!state.summary?.backupPublished || !state.legacyBackup) throw new Error('AUDIT_BACKUP_REQUIRED');
+    const channel = await getChannel();
+    // Irreversible deletion is limited to this exact destination, our old audit
+    // footer, our bot author and the backed-up IDs. Never touch source LC channels.
+    if (channel.id !== AUDIT_CHANNEL_ID || channel.guildId !== GUILD_ID) throw new Error('AUDIT_CLEANUP_WRONG_CHANNEL');
+    const progress = state.legacyCleanup ||= { removed: 0, skipped: 0, completedIds: {}, done: false };
+    for (const previous of state.legacyBackup) {
+      if (progress.completedIds[previous.id]) continue;
+      await wait();
+      let message;
+      try { message = await channel.messages.fetch(previous.id); }
+      catch (error) { if (error.code !== 10008) throw error; }
+      if (message?.author?.id === channel.client.user.id && message.embeds?.some(e => e.footer?.text?.startsWith('transaction-audit:'))) {
+        await wait(); await message.delete(); progress.removed++;
+      } else progress.skipped++;
+      progress.completedIds[previous.id] = true;
+      await exclusive(persist);
+    }
+    progress.done = true;
     await exclusive(persist);
   }
   async function importHistory() {
@@ -287,12 +313,14 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
   async function run() {
     if (running) return;
     running = true;
-    try { await init(); for (const row of [...pending.values()]) await record(row); await publish(); await importHistory(); await publish(); lastError = null; }
+    try { await init(); for (const row of [...pending.values()]) await record(row); await publish(); await cleanupLegacy(); await importHistory(); await publish(); lastError = null; }
     catch (error) { lastError = String(error?.code || error?.status || error?.message || 'AUDIT_ERROR').slice(0, 100); log({ error: lastError }); }
     finally { running = false; }
   }
-  return { record, run, snapshot: () => ({ initialized: Boolean(state), running, pending: pending.size, records: state ? Object.keys(state.entries).length : 0,
+  return { record, run, cleanupLegacy, snapshot: () => ({ initialized: Boolean(state), running, pending: pending.size, records: state ? Object.keys(state.entries).length : 0,
     published: state ? Object.values(state.entries).filter(e => e.messageId).length : 0,
-    history: state?.history || {}, databaseHistory: state?.databaseHistory || null, summary: state?.summary || null, legacyCards: state?.legacyBackup?.length || 0, lastError }) };
+    history: state?.history || {}, databaseHistory: state?.databaseHistory || null, summary: state?.summary || null,
+    legacyCards: state?.legacyBackup?.length || 0, legacyCleanup: state?.legacyCleanup ? {
+      removed: state.legacyCleanup.removed, skipped: state.legacyCleanup.skipped, done: state.legacyCleanup.done } : null, lastError }) };
 }
 module.exports = { AUDIT_CHANNEL_ID, AUDIT_ROW_ID, GUILD_ID, OWNER_ID, reportRecord, csv, money, normalizeRecord, parseRep, fromHumanRep, fromPurchase, fromTranscript, payload, createTransactionAudit };

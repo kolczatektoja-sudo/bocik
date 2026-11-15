@@ -165,6 +165,7 @@ const client = new Client({
 });
 
 const transactionAudit = createTransactionAudit({
+  cleanupLegacyEnabled: require('./transaction-audit-settings.json').cleanupLegacy === true,
   async load() {
     const { data, error } = await db.supabase.from('bot_state').select('data').eq('id', AUDIT_ROW_ID).maybeSingle();
     if (error) throw error;

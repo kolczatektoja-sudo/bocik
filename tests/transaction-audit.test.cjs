@@ -121,6 +121,29 @@ test('owner is separated from customer records and CSV preserves exact IDs witho
   assert.ok(output.includes("'=DANGEROUS()"));
   assert.ok(output.includes("'"+OWNER_ID));
 });
+test('cleanup requires a delivered backup and only removes our backed-up old audit cards in logi2', async () => {
+  const { AUDIT_CHANNEL_ID, GUILD_ID } = require('../transaction-audit.cjs');
+  const removed = [];
+  const messages = new Map([
+    ['old', { id: 'old', author: { id: seller }, embeds: [{ footer: { text: 'transaction-audit:old' } }], delete: async () => removed.push('old') }],
+    ['foreign', { id: 'foreign', author: { id: buyer }, embeds: [{ footer: { text: 'transaction-audit:other' } }], delete: async () => { throw new Error('FOREIGN DELETE'); } }],
+    ['summary', { id: 'summary', author: { id: seller }, embeds: [{ footer: { text: 'transaction-audit-summary:v1' } }], delete: async () => { throw new Error('SUMMARY DELETE'); } }],
+  ]);
+  let data = { kind: 'transaction-audit-v1', entries: {}, history: {}, summary: { backupPublished: false }, legacyBackup: [...messages.keys()].map(id => ({ id })) };
+  const channel = { id: AUDIT_CHANNEL_ID, guildId: GUILD_ID, client: { user: { id: seller } }, messages: { fetch: async id => messages.get(id) } };
+  const make = () => createTransactionAudit({ load: async () => structuredClone(data), save: async value => { data = structuredClone(value); },
+    cleanupLegacyEnabled: true, getChannel: async () => channel, sleep: async () => {} });
+  await assert.rejects(make().cleanupLegacy(), /AUDIT_BACKUP_REQUIRED/);
+  assert.equal(removed.length, 0);
+  data.summary.backupPublished = true;
+  channel.id = '1449840030947217529';
+  await assert.rejects(make().cleanupLegacy(), /AUDIT_CLEANUP_WRONG_CHANNEL/);
+  assert.equal(removed.length, 0);
+  channel.id = AUDIT_CHANNEL_ID;
+  const audit = make(); await audit.cleanupLegacy(); await audit.cleanupLegacy();
+  assert.deepEqual(removed, ['old']);
+  assert.equal(audit.snapshot().legacyCleanup.done, true);
+});
 test('read-only history import matches human evidence and never invokes source mutation', async () => {
   let saved;
   const source = { id: 'rep', client: { user: { id: seller } }, messages: {

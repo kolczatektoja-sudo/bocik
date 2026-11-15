@@ -4,6 +4,14 @@ Kanał docelowy: `1571279387137933322`, serwer `1350446732365926491`.
 Stan i kolejka wysyłki: osobny wiersz `bot_state.id=6`, `kind=transaction-audit-v1`.
 Nie korzysta z licznika legit checków jako dowodu zakupu i nie zmienia wydatków klientów.
 
+## Aktualny widok kanału
+
+Jeden panel aktualizowany w miejscu oraz załączniki CSV/JSON, bez wiadomości dla każdej transakcji.
+ID `1305200545979437129` to właściciel: jego historyczne rekordy trafiają do osobnego pliku wewnętrznego, nie do CSV klientów.
+JSON zawiera także kopię wcześniejszych kart audytu z tego kanału. Nie zmienia źródłowych legit checków.
+`transaction-audit-settings.json.cleanupLegacy` domyślnie jest wyłączone. Wolno je włączyć wyłącznie po zgodzie użytkownika na usunięcie starych kart audytu z logi2.
+Usuwanie sprawdza jednocześnie: dokładny kanał logi2, autora będącego tym botem, starą stopkę audytu, zapisany identyfikator i wcześniejsze dostarczenie kopii JSON.
+
 ## Bieżące zdarzenia
 
 - `/ticket-zakoncz`: zapis zgłoszenia realizacji przez obsługę, z użytkownikiem i obsługą z ticketu.
