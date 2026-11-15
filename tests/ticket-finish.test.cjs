@@ -23,6 +23,7 @@ function fixture(overrides = {}) {
     syncUserSpentRoles: async () => events.push('roles'),
     buildPendingLegitCheckPayload: () => ({ components: ['panel'] }),
     scheduleSavePersistentState: () => events.push('save'),
+    recordTicketTransaction: () => events.push('audit'),
     hasUserReactedInCzyLegit: async () => { events.push('pings'); return true; },
     hasUserPublishedOpinion: async () => true,
     ticketCategoryManager: { move: async () => events.push('move') },

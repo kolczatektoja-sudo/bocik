@@ -33,6 +33,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { editContestWithGif, repairContestGifs } = require("./contest-gif.cjs");
+const { createTransactionAudit, AUDIT_CHANNEL_ID, AUDIT_ROW_ID } = require('./transaction-audit.cjs');
 const DISCORD_API_BASE = process.env.DISCORD_API_BASE || "https://discord.com/api";
 const ENABLE_HEAVY_STARTUP_SYNC = process.env.ENABLE_HEAVY_STARTUP_SYNC === "true";
 const { createDiscordRateLimitGate } = require("./discord-rate-limit.cjs");
@@ -97,6 +98,7 @@ app.get('/health', (req, res) => {
     commit: process.env.RENDER_GIT_COMMIT?.slice(0, 7) || 'local',
     discord_login: lastDiscordLoginDiagnostic,
     last_interaction: lastInteractionDiagnostic,
+    transaction_audit: transactionAudit.snapshot(),
     timestamp: new Date().toISOString(),
   });
 });
@@ -161,6 +163,76 @@ const client = new Client({
     Partials.User,
   ]
 });
+
+const transactionAudit = createTransactionAudit({
+  async load() {
+    const { data, error } = await db.supabase.from('bot_state').select('data').eq('id', AUDIT_ROW_ID).maybeSingle();
+    if (error) throw error;
+    return data?.data || null;
+  },
+  async save(data) {
+    const { error } = await db.supabase.from('bot_state').upsert({ id: AUDIT_ROW_ID, data, updated_at: new Date().toISOString() });
+    if (error) throw error;
+  },
+  async getChannel() {
+    const channel = await client.channels.fetch(AUDIT_CHANNEL_ID);
+    if (channel?.guildId !== '1350446732365926491' || !channel.isTextBased()) throw new Error('AUDIT_CHANNEL_INVALID');
+    if (channel.permissionsFor(channel.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) throw new Error('AUDIT_CHANNEL_MUST_BE_PRIVATE');
+    return channel;
+  },
+  async getSources() {
+    const guild = client.guilds.cache.get('1350446732365926491');
+    if (!guild) throw new Error('AUDIT_GUILD_UNAVAILABLE');
+    const rep = await client.channels.fetch(REP_CHANNEL_ID);
+    const archive = await getLogiTicketChannel(guild);
+    if (!archive) throw new Error('AUDIT_ARCHIVE_UNAVAILABLE');
+    return [{ kind: 'rep', channel: rep }, { kind: 'archive', channel: archive }];
+  },
+  async readPurchases() {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db.supabase.from('user_purchases').select('id,user_id,guild_id,price,server,type,created_at')
+        .eq('guild_id', '1350446732365926491').order('id').range(from, from + 999);
+      if (error) throw error;
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+    return rows;
+  },
+  cooldown: () => discordRateLimit.snapshot().global_retry_after_ms,
+  async readTranscript(url) {
+    const parsed = new URL(url);
+    if (!['cdn.discordapp.com', 'media.discordapp.net'].includes(parsed.hostname) || !parsed.pathname.startsWith('/attachments/')) throw new Error('AUDIT_ATTACHMENT_URL');
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error' });
+    if (!response.ok) throw Object.assign(new Error('AUDIT_ATTACHMENT_HTTP'), { status: response.status });
+    if (Number(response.headers.get('content-length')) > 8000000) throw new Error('AUDIT_ATTACHMENT_TOO_LARGE');
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > 8000000) throw new Error('AUDIT_ATTACHMENT_TOO_LARGE');
+    return Buffer.from(bytes).toString('utf8');
+  },
+  log: info => console.log('[TRANSACTION_AUDIT]', JSON.stringify(info)),
+});
+
+function recordTicketTransaction(channel, pending, meta, phase, evidenceMessage = null, actorId = null) {
+  if (!pending || pending.isTest || !channel?.guildId) return;
+  // This observer never deletes/edits a source message and cannot fail the +rep handler.
+  transactionAudit.record({
+    key: `${pending.auditKey || `ticket:${channel.id}:${pending.ts}`}:${phase}`,
+    transactionId: pending.auditKey || `ticket:${channel.id}:${pending.ts}`,
+    guildId: channel.guildId, ticketId: channel.id, buyerId: pending.userId,
+    buyerName: client.users.cache.get(pending.userId)?.tag || null,
+    sellerId: pending.commandUserId, sellerName: pending.commandUsername,
+    type: pending.typ, amount: pending.co, server: pending.serwer,
+    paymentMethod: meta?.paymentMethod || null,
+    occurredAt: evidenceMessage ? new Date(evidenceMessage.createdTimestamp).toISOString() : new Date(pending.ts).toISOString(),
+    sourceUrl: evidenceMessage?.url || `https://discord.com/channels/${channel.guildId}/${channel.id}/${pending.embedMessageId}`,
+    sourceMessageId: evidenceMessage?.id || pending.embedMessageId,
+    sourceKind: phase,
+    evidence: phase === 'customer-rep' ? 'Klient wystawił +rep zgodny z ticketem. Nie weryfikowano płatności.' :
+      phase === 'anonymous-ticket' ? `Anonimowy LC powiązany z ticketem rzeczywistego użytkownika. Zatwierdził ID ${actorId}. Nie weryfikowano płatności.` :
+      'Obsługa oznaczyła ticket jako zrealizowany. Oczekiwanie na potwierdzenie klienta; nie weryfikowano płatności.',
+  }).catch(error => console.log('[TRANSACTION_AUDIT] Zapis czeka na ponowienie:', error?.code || error?.status || 'storage-error'));
+}
 
 const discordRestRecovery = createDiscordRecovery({
   gate: discordRateLimit,
@@ -7356,6 +7428,10 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[READY] Bot jest online i gotowy do pracy!`);
 
   await persistentStateReady;
+  // Slow, resumable, read-only backfill; it never blocks command registration.
+  const auditTimer = setInterval(() => { if (c.isReady()) transactionAudit.run(); }, 60000);
+  auditTimer.unref?.();
+  setTimeout(() => transactionAudit.run(), 30000).unref?.();
   discordRestRecovery.probeNow?.().catch(() => {});
 
   // Napraw tylko zapisane konkursy, bez skanowania historii kanałów.
@@ -18460,6 +18536,7 @@ async function finishTicketZakonczCommand(interaction) {
     userId: ticketOwnerId,
     commandUserId: interaction.user.id,
     commandUsername: interaction.user.username,
+    auditKey: `ticket:${channel.id}:${interaction.id}`,
     typ,
     co: formattedCena,
     serwer,
@@ -18473,6 +18550,8 @@ async function finishTicketZakonczCommand(interaction) {
   ticketRepMessages.set(sentEmbedMsg.id, repMessage);
   ticketRepMessages.set(channel.id, repMessage);
   scheduleSavePersistentState();
+
+  recordTicketTransaction(channel, pendingTicketClose.get(channel.id), ticketData, 'staff-completion');
 
   // Only account for a completed handoff. A failed panel send must not charge again on retry.
   if (typ === "zakup") {
@@ -19348,6 +19427,7 @@ async function closeTicketAnonymously(channel, guild, executorId) {
 
   // Send via webhook as "Anonimowy LC" if possible
   const sentAnonRep = await sendAnonRep(repChannel, simulatedRepText);
+  recordTicketTransaction(channel, ticketData, ticketOwners.get(channel.id), 'anonymous-ticket', sentAnonRep, executorId);
 
   if (legitRepHistoryInitialized && sentAnonRep?.id) {
     legitRepMessageIds.add(sentAnonRep.id);
@@ -24912,6 +24992,10 @@ client.on(Events.MessageCreate, async (message) => {
         legitRepCount++;
       }
       const pendingTicketData = pendingTicketEntry?.[1];
+      recordTicketTransaction(
+        { id: pendingTicketEntry[0], guildId: message.guildId }, pendingTicketData,
+        ticketOwners.get(pendingTicketEntry[0]), 'customer-rep', message, message.author.id,
+      );
       const creditedSellerId = String(pendingTicketData?.commandUserId || "");
       if (creditedSellerId) {
         creditSellerTicket(creditedSellerId);
