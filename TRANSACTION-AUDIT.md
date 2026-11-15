@@ -6,7 +6,7 @@ Nie korzysta z licznika legit checków jako dowodu zakupu i nie zmienia wydatkó
 
 ## Aktualny widok kanału
 
-Jeden panel aktualizowany w miejscu oraz załączniki CSV/JSON, bez wiadomości dla każdej transakcji.
+Panel z CSV/JSON pozostaje aktualizowany w miejscu. Od tygodnia rozpoczynającego się 9 listopada 2026 dochodzą krótkie wpisy klientów wysyłane webhookiem z ich nickiem i avatarem: KUPIŁ/SPRZEDAŁ ZA XX ZŁ NA SERWERZE XXX. To automatyczny zapis bota na prywatnym kanale, nie wiadomość wysłana przez klienta. Wpisy właściciela oraz sam etap staff-completion są pomijane. Anonimowy LC i potwierdzenie klienta mają wspólny klucz transakcji; restart odzyskuje wysłane wiadomości po stopce webhooka. Token webhooka nie jest zapisywany w rejestrze ani wystawiany w /health. Historyczna baza nie przechowuje flagi anonimowości, więc uzupełnienie tygodnia obejmuje wszystkie zachowane rekordy klientów, bez zgadywania tej flagi.
 ID `1305200545979437129` to właściciel: jego historyczne rekordy trafiają do osobnego pliku wewnętrznego, nie do CSV klientów.
 JSON zawiera także kopię wcześniejszych kart audytu z tego kanału. Nie zmienia źródłowych legit checków.
 `transaction-audit-settings.json.cleanupLegacy` domyślnie jest wyłączone. Wolno je włączyć wyłącznie po zgodzie użytkownika na usunięcie starych kart audytu z logi2.

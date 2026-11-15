@@ -164,7 +164,29 @@ const client = new Client({
   ]
 });
 
+let transactionReceiptWebhook;
+const transactionReceiptIdentities = new Map();
 const transactionAudit = createTransactionAudit({
+  receiptSince: '2026-11-09T00:00:00+01:00',
+  async getReceiptWebhook(channel) {
+    if (transactionReceiptWebhook) return transactionReceiptWebhook;
+    const hooks = await channel.fetchWebhooks();
+    transactionReceiptWebhook = hooks.find(h => h.name === 'New Shop — transakcje' && h.owner?.id === client.user.id && h.token)
+      || await channel.createWebhook({name: 'New Shop — transakcje', reason: 'Prywatne wpisy transakcji klientów na logi2'});
+    return transactionReceiptWebhook;
+  },
+  async getReceiptIdentity(entry) {
+    if (transactionReceiptIdentities.has(entry.buyerId)) return transactionReceiptIdentities.get(entry.buyerId);
+    let user = client.users.cache.get(entry.buyerId);
+    if (!user) {
+      try { user = await client.users.fetch(entry.buyerId); }
+      catch(error) { if (error.code !== 10013) throw error; }
+    }
+    const identity = {name: user?.globalName || user?.username || entry.buyerName || `Klient ${entry.buyerId}`,
+      avatarURL: user?.displayAvatarURL({size:128})};
+    transactionReceiptIdentities.set(entry.buyerId, identity);
+    return identity;
+  },
   cleanupLegacyEnabled: require('./transaction-audit-settings.json').cleanupLegacy === true,
   async load() {
     const { data, error } = await db.supabase.from('bot_state').select('data').eq('id', AUDIT_ROW_ID).maybeSingle();

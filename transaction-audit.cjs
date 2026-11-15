@@ -125,7 +125,7 @@ function payload(record) {
   }] };
 }
 function createTransactionAudit({ load, save, getChannel, getSources, readPurchases, cooldown = () => 0,
-  readTranscript, cleanupLegacyEnabled = false, log = () => {}, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  readTranscript, receiptSince, getReceiptWebhook, getReceiptIdentity, cleanupLegacyEnabled = false, log = () => {}, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   let state, initialized, chain = Promise.resolve(), running = false, lastError = null;
   const pending = new Map();
   const exclusive = fn => { const task = chain.then(fn); chain = task.catch(() => {}); return task; };
@@ -206,7 +206,7 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
     const data = {
       allowedMentions: { parse: [] },
       embeds: [{ title: '📒 Historia transakcji — pliki i podsumowanie', color: 0x4377ff,
-        description: 'Pełne szczegóły znajdziesz w załącznikach. Ten panel aktualizuje się w miejscu — bez osobnych wiadomości dla każdego zakupu.',
+        description: 'Pełne szczegóły znajdziesz w załącznikach. Ten panel aktualizuje się w miejscu — oraz krótkie wpisy klientów od 9 listopada 2026.',
         fields: [
           { name: 'Rekordy klientów', value: String(customers.length), inline: true },
           { name: 'Wpisy właściciela / wewnętrzne', value: `${internal.length} — osobny plik, poza rejestrem klientów`, inline: true },
@@ -331,16 +331,22 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
       }
     }
   }
+  async function publishCustomerReceipts() {
+    if (!receiptSince || !getReceiptWebhook) return;
+    await require('./transaction-receipts.cjs').publishReceipts({state, channel: await getChannel(), since: receiptSince,
+      getWebhook: getReceiptWebhook, getIdentity: getReceiptIdentity, wait, persist: () => exclusive(persist)});
+  }
   async function run() {
     if (running) return;
     running = true;
-    try { await init(); for (const row of [...pending.values()]) await record(row); await publish(); await cleanupLegacy(); await importHistory(); await publish(); lastError = null; }
+    try { await init(); for (const row of [...pending.values()]) await record(row); await publish(); await cleanupLegacy(); await publishCustomerReceipts(); await importHistory(); await publish(); await publishCustomerReceipts(); lastError = null; }
     catch (error) { lastError = String(error?.code || error?.status || error?.message || 'AUDIT_ERROR').slice(0, 100); log({ error: lastError }); }
     finally { running = false; }
   }
   return { record, run, cleanupLegacy, snapshot: () => ({ initialized: Boolean(state), running, pending: pending.size, records: state ? Object.keys(state.entries).length : 0,
     published: state ? Object.values(state.entries).filter(e => e.messageId).length : 0,
     history: state?.history || {}, databaseHistory: state?.databaseHistory || null, summary: state?.summary || null,
+    receipts: state?.receipts ? { published: Object.keys(state.receipts.sent).length, since: state.receipts.since, eligible: state.receipts.eligible } : null,
     legacyCards: state?.legacyBackup?.length || 0, legacyCleanup: state?.legacyCleanup ? {
       removed: state.legacyCleanup.removed, skipped: state.legacyCleanup.skipped, done: state.legacyCleanup.done } : null, lastError }) };
 }
