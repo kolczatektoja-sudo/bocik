@@ -21,6 +21,7 @@ Uruchamia się automatycznie i zachowuje postęp po restarcie.
 3. Czyta kanał archiwum ticketów wskazany przez `getLogiTicketChannel`. Z archiwów tekstowych odzyskuje właściciela i parametry transakcji. Wymaga rozpoznanego automatycznego zamknięcia po +rep lub anonimowym LC oraz jednoznacznych parametrów transakcji. Jeśli znajduje zgodny rekord bazy, dodaje powiązanie; jeśli nie, jawnie opisuje brak dopasowanego rekordu bazy. Tożsamość musi zawsze pochodzić z nagłówka rzeczywistego ticketu.
 4. Botowe/webhookowe wpisy +rep bez powiązanego archiwum nie stanowią źródła tożsamości. Nie zgaduje klienta na podstawie samej kwoty.
 5. W rejestrze zachowuje datę źródłową, datę importu, identyfikatory źródeł i SHA-256 odczytanego transkryptu, jeśli był użyty.
+6. Po dopasowaniu zachowanych wiadomości importuje pozostałe historyczne rekordy `user_purchases` sprzed uruchomienia importu. Ta tabela jest zapisywana przez `/ticket-zakoncz`, a nie przez generator auto LC. Przy brakującym powiązaniu z wiadomością pokazuje źródło jako rekord bazy i nie dopowiada sprzedawcy ani potwierdzenia wpłaty. Kluczem jest ID rekordu, więc nie dubluje dopasowanych wcześniej zakupów. Nie importuje tą drogą nowych zakupów obsłużonych już przez bieżący rejestr.
 
 Import używa wyłącznie odczytu wiadomości źródłowych. Nie wywołuje ich edycji, usuwania, ponownego publikowania ani istniejącego handlera `messageCreate`.
 

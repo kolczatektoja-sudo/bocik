@@ -52,6 +52,14 @@ function fromHumanRep(message, rows) {
     evidence: 'Wiadomość klienta +rep zgodna z zapisem user_purchases. Nie weryfikowano płatności.',
     originalPurchaseAt: purchase.created_at });
 }
+function fromPurchase(row, cutoff) {
+  if (!row?.id || !id(row.user_id) || Date.parse(row.created_at) > Date.parse(cutoff)) return null;
+  return normalizeRecord({ key: `history:purchase:${row.id}`, guildId: row.guild_id, buyerId: row.user_id,
+    type: row.type, amount: row.price, server: row.server, occurredAt: row.created_at,
+    originalPurchaseAt: row.created_at, purchaseId: String(row.id), sourceKind: 'history-database',
+    sourceUrl: `Baza user_purchases — rekord ID ${row.id}`,
+    evidence: 'Historyczny zapis realizacji z /ticket-zakoncz: ID klienta, kwota i data pochodzą z bazy. Brak zachowanego powiązania z publicznym +rep; nie weryfikowano płatności.' });
+}
 function fromTranscript(text, message, rows) {
   const buyerId = id(text.match(/^Opened by: (\d+)$/m)?.[1]);
   const ticketId = id(text.match(/^Channel ID: (\d+)$/m)?.[1]);
@@ -78,7 +86,7 @@ function payload(record) {
   const label = record.type === 'zakup' ? 'Zakup klienta' : 'Sprzedaż klienta do sklepu';
   const kinds = { 'staff-completion': 'Zgłoszenie realizacji przez obsługę', 'customer-rep': 'Potwierdzenie +rep od klienta',
     'anonymous-ticket': 'Anonimowy LC powiązany z ticketem', 'history-customer-rep': 'Import: wiadomość klienta i historia zakupów',
-    'history-ticket-archive': 'Import: archiwum ticketu i historia zakupów' };
+    'history-ticket-archive': 'Import: archiwum ticketu', 'history-database': 'Import: zachowana historia zakupów z /ticket-zakoncz' };
   return { allowedMentions: { parse: [] }, embeds: [{ color: 0x27ae60, title: `📒 ${label} — rejestr`,
     description: record.evidence,
     fields: [
@@ -116,7 +124,7 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
       await init();
       if (state.entries[row.key]) { pending.delete(row.key); return false; }
       if (row.key.startsWith('history:') && Object.values(state.entries).some(e =>
-        e.sourceMessageId === row.sourceMessageId || row.ticketId && e.ticketId === row.ticketId &&
+        row.sourceMessageId && e.sourceMessageId === row.sourceMessageId || row.ticketId && e.ticketId === row.ticketId &&
         e.buyerId === row.buyerId && e.amountCents === row.amountCents && e.type === row.type)) {
         pending.delete(row.key); return false;
       }
@@ -161,7 +169,7 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
   async function importHistory() {
     await init();
     const sources = await getSources();
-    if (sources.every(source => state.history[source.channel.id]?.done &&
+    if (state.databaseHistory?.done && sources.every(source => state.history[source.channel.id]?.done &&
       (source.kind !== 'archive' || state.history[source.channel.id].parserVersion === 2))) return;
     const rows = await readPurchases();
     for (const source of sources) {
@@ -178,7 +186,10 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
             if (owner) {
               const attachment = [...(message.attachments?.values() || [])].find(a => a.name?.endsWith('.txt'));
               if (attachment) {
-                await wait();
+                // CDN attachments are separate from Discord REST. Keep a small
+                // paced read without delaying every file by a full API interval.
+                await sleep(250);
+                if (cooldown() > 0) throw Object.assign(new Error('AUDIT_COOLDOWN'), { localCooldown: true });
                 try { entry = fromTranscript(await readTranscript(attachment.url), message, rows); }
                 catch (error) {
                   if (![401, 403, 404].includes(error.status)) throw error;
@@ -197,6 +208,17 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
         log({ channel: source.channel.id, ...progress });
         await publish();
       }
+      if (source.kind === 'rep' && !state.databaseHistory?.done) {
+        const progress = state.databaseHistory ||= { scanned: 0, imported: 0, done: false };
+        for (const row of rows) {
+          const entry = fromPurchase(row, state.createdAt);
+          if (entry && await record(entry)) progress.imported++;
+          progress.scanned++;
+        }
+        progress.done = true;
+        await exclusive(persist);
+        await publish();
+      }
     }
   }
   async function run() {
@@ -208,6 +230,6 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
   }
   return { record, run, snapshot: () => ({ initialized: Boolean(state), running, pending: pending.size, records: state ? Object.keys(state.entries).length : 0,
     published: state ? Object.values(state.entries).filter(e => e.messageId).length : 0,
-    history: state?.history || {}, lastError }) };
+    history: state?.history || {}, databaseHistory: state?.databaseHistory || null, lastError }) };
 }
-module.exports = { AUDIT_CHANNEL_ID, AUDIT_ROW_ID, GUILD_ID, money, normalizeRecord, parseRep, fromHumanRep, fromTranscript, payload, createTransactionAudit };
+module.exports = { AUDIT_CHANNEL_ID, AUDIT_ROW_ID, GUILD_ID, money, normalizeRecord, parseRep, fromHumanRep, fromPurchase, fromTranscript, payload, createTransactionAudit };

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTransactionAudit, fromHumanRep, fromTranscript, normalizeRecord, money, payload } = require('../transaction-audit.cjs');
+const { createTransactionAudit, fromHumanRep, fromPurchase, fromTranscript, normalizeRecord, money, payload } = require('../transaction-audit.cjs');
 const buyer = '1305200545979437129', seller = '1449397101032112139', guild = '1350446732365926491';
 const now = '2026-11-15T15:00:00.000Z';
 const purchase = { id: 17, user_id: buyer, price: 25, type: 'zakup', server: 'Anarchia LF', created_at: now };
@@ -9,6 +9,15 @@ const message = { id: '1571279387137933323', guildId: guild, createdTimestamp: D
   url: `https://discord.com/channels/${guild}/1449840030947217529/1571279387137933323` };
 const row = () => ({ key: 'ticket:1:interaction:staff', buyerId: buyer, guildId: guild, sellerId: seller,
   type: 'zakup', amount: '25 PLN', occurredAt: now, sourceUrl: message.url, sourceKind: 'staff-completion' });
+
+test('retained purchase rows recover the buyer without fabricating a seller or payment confirmation', () => {
+  const entry = fromPurchase({ ...purchase, guild_id: guild }, '2026-11-15T16:00:00Z');
+  assert.equal(entry.buyerId, buyer);
+  assert.equal(entry.amountCents, 2500);
+  assert.equal(entry.sellerId, undefined);
+  assert.equal(entry.paymentVerified, false);
+  assert.equal(fromPurchase({ ...purchase, guild_id: guild, created_at: '2026-11-16T00:00:00Z' }, now), null);
+});
 
 test('money is exact in grosze and invalid/test/reward data never becomes a transaction', () => {
   assert.equal(money('12,34 PLN'), 1234);
@@ -92,6 +101,12 @@ test('occupied unrelated row is never overwritten and failed send keeps durable 
   const f = fixture(); const audit = f.make(); await audit.record(row()); f.setSendFail(true);
   await audit.run(); assert.equal(audit.snapshot().records, 1); assert.equal(audit.snapshot().published, 0);
   f.setSendFail(false); await audit.run(); assert.equal(audit.snapshot().published, 1);
+});
+test('distinct database records without message IDs are retained and never merged', async () => {
+  const f = fixture(); const audit = f.make();
+  await audit.record(fromPurchase({ ...purchase, guild_id: guild }, '2026-11-15T16:00:00Z'));
+  await audit.record(fromPurchase({ ...purchase, guild_id: guild, id: 18 }, '2026-11-15T16:00:00Z'));
+  assert.equal(audit.snapshot().records, 2);
 });
 test('read-only history import matches human evidence and never invokes source mutation', async () => {
   let saved;
