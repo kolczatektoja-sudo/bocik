@@ -18,7 +18,7 @@ Uruchamia się automatycznie i zachowuje postęp po restarcie.
 
 1. Odczytuje `user_purchases` dla tego serwera.
 2. Czyta historię kanału `1449840030947217529`. Importuje tylko wiadomości rzeczywistych użytkowników zgodne z rekordem bazy: to samo ID, kwota, rodzaj, serwer i data w przedziale do 7 dni.
-3. Czyta kanał archiwum ticketów wskazany przez `getLogiTicketChannel`. Z archiwów tekstowych odzyskuje właściciela, parametry transakcji i powiązanie z rekordem bazy. Wymaga rozpoznanego automatycznego zamknięcia po +rep lub anonimowym LC oraz jednoznacznych parametrów transakcji.
+3. Czyta kanał archiwum ticketów wskazany przez `getLogiTicketChannel`. Z archiwów tekstowych odzyskuje właściciela i parametry transakcji. Wymaga rozpoznanego automatycznego zamknięcia po +rep lub anonimowym LC oraz jednoznacznych parametrów transakcji. Jeśli znajduje zgodny rekord bazy, dodaje powiązanie; jeśli nie, jawnie opisuje brak dopasowanego rekordu bazy. Tożsamość musi zawsze pochodzić z nagłówka rzeczywistego ticketu.
 4. Botowe/webhookowe wpisy +rep bez powiązanego archiwum nie stanowią źródła tożsamości. Nie zgaduje klienta na podstawie samej kwoty.
 5. W rejestrze zachowuje datę źródłową, datę importu, identyfikatory źródeł i SHA-256 odczytanego transkryptu, jeśli był użyty.
 

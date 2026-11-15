@@ -66,13 +66,12 @@ function fromTranscript(text, message, rows) {
   const rep = [...unique.values()][0];
   const evidence = { ...rep, buyerId, occurredAt: message.embeds?.[0]?.timestamp || new Date(message.createdTimestamp).toISOString() };
   const purchase = matchPurchase(rows, evidence);
-  if (!purchase?.id) return null;
   const sellerId = rep.sellerId || id(text.match(/^Claimed by: (\d+)$/m)?.[1]);
-  return normalizeRecord({ ...evidence, key: `history:purchase:${purchase.id}`, guildId: message.guildId,
-    sellerId, ticketId, purchaseId: String(purchase.id), sourceKind: 'history-ticket-archive',
-    sourceUrl: message.url, sourceMessageId: message.id, originalPurchaseAt: purchase.created_at,
+  return normalizeRecord({ ...evidence, key: purchase?.id ? `history:purchase:${purchase.id}` : `history:ticket:${ticketId}`, guildId: message.guildId,
+    sellerId, ticketId, purchaseId: purchase?.id ? String(purchase.id) : null, sourceKind: 'history-ticket-archive',
+    sourceUrl: message.url, sourceMessageId: message.id, originalPurchaseAt: purchase?.created_at || null,
     transcriptSha256: createHash('sha256').update(text).digest('hex'),
-    evidence: `Archiwum ticketu + zgodny zapis user_purchases. ${method}. Tożsamość pochodzi z ticketu; nie weryfikowano płatności.` });
+    evidence: `Archiwum ticketu${purchase?.id ? ' + zgodny zapis historii zakupów' : '; brak dopasowanego rekordu w zachowanej bazie'}. ${method}. Tożsamość i kwota pochodzą z ticketu; nie weryfikowano płatności.` });
 }
 function payload(record) {
   const user = (uid, name) => uid ? `<@${uid}>\nID: \`${uid}\`${name ? `\n${cut(name, 100)}` : ''}` : 'Nie zapisano';
@@ -162,10 +161,12 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
   async function importHistory() {
     await init();
     const sources = await getSources();
-    if (sources.every(source => state.history[source.channel.id]?.done)) return;
+    if (sources.every(source => state.history[source.channel.id]?.done &&
+      (source.kind !== 'archive' || state.history[source.channel.id].parserVersion === 2))) return;
     const rows = await readPurchases();
     for (const source of sources) {
-      const progress = state.history[source.channel.id] ||= { scanned: 0, imported: 0, excluded: 0, before: null, done: false };
+      if (source.kind === 'archive' && state.history[source.channel.id]?.parserVersion !== 2) state.history[source.channel.id] = null;
+      const progress = state.history[source.channel.id] ||= { scanned: 0, imported: 0, excluded: 0, before: null, done: false, parserVersion: 2 };
       while (!progress.done) {
         await wait();
         const batch = await source.channel.messages.fetch({ limit: 100, ...(progress.before ? { before: progress.before } : {}) });
@@ -174,9 +175,16 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
           if (source.kind === 'rep') entry = fromHumanRep(message, rows);
           else if (message.author?.id === source.channel.client.user.id) {
             const owner = message.embeds?.[0]?.fields?.find(f => f.name === 'Klient')?.value?.match(/\d{16,22}/)?.[0];
-            if (owner && rows.some(row => String(row.user_id) === owner)) {
+            if (owner) {
               const attachment = [...(message.attachments?.values() || [])].find(a => a.name?.endsWith('.txt'));
-              if (attachment) { await wait(); entry = fromTranscript(await readTranscript(attachment.url), message, rows); }
+              if (attachment) {
+                await wait();
+                try { entry = fromTranscript(await readTranscript(attachment.url), message, rows); }
+                catch (error) {
+                  if (![401, 403, 404].includes(error.status)) throw error;
+                  progress.unavailableAttachments = (progress.unavailableAttachments || 0) + 1;
+                }
+              }
             }
           }
           if (entry && await record(entry)) progress.imported++;

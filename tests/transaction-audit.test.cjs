@@ -29,15 +29,19 @@ test('human rep requires matching real-user database row; bot/webhook fake reps 
   assert.equal(fromHumanRep(message, []), null);
   assert.equal(fromHumanRep(message, [{ ...purchase, price: 40 }]), null);
 });
-test('anonymous identity is recovered only from a linked ticket archive and purchase', () => {
+test('anonymous identity requires an actual ticket archive; missing database is explicitly disclosed', () => {
   const text = `Channel ID: 1571279387137933324\nOpened by: ${buyer}\nClaimed by: ${seller}\nClose method: Automatyczne zamknięcie po anonimowym legit checku\n\n${message.content}`;
   const entry = fromTranscript(text, message, [purchase]);
   assert.equal(entry.buyerId, buyer);
   assert.equal(entry.amountCents, 2500);
   assert.match(entry.transcriptSha256, /^[a-f0-9]{64}$/);
   assert.equal(fromTranscript(message.content, message, [purchase]), null);
-  assert.equal(fromTranscript(text, message, []), null);
-  assert.equal(fromTranscript(text.replace(buyer, seller), message, [purchase]), null);
+  const archiveOnly = fromTranscript(text, message, []);
+  assert.equal(archiveOnly.buyerId, buyer);
+  assert.equal(archiveOnly.purchaseId, null);
+  assert.equal(archiveOnly.paymentVerified, false);
+  assert.match(archiveOnly.evidence, /brak dopasowanego rekordu/);
+  assert.equal(fromTranscript(text.replace('Opened by: '+buyer, 'Opened by: unknown'), message, [purchase]), null);
   assert.equal(fromTranscript(text + '\n+rep @other ZAKUP 40 PLN Anarchia LF', message, [purchase]), null);
 });
 test('log shows both identities, explicit evidence limitations and no notifications', () => {
