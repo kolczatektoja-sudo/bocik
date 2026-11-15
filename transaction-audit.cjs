@@ -151,17 +151,33 @@ function createTransactionAudit({ load, save, getChannel, getSources, readPurcha
       if (!batch.size) break;
       for (const message of batch.values()) {
         if (message.author?.id !== channel.client.user.id) continue;
-        const footer = message.embeds?.[0]?.footer?.text || '';
-        if (footer.startsWith('transaction-audit:')) existing.set(footer.slice(18), message.id);
+        for (const embed of message.embeds || []) {
+          const footer = embed.footer?.text || '';
+          if (footer.startsWith('transaction-audit:')) existing.set(footer.slice(18), message.id);
+        }
       }
       before = batch.last().id;
       if (batch.size < 100) break;
     } while (before);
-    for (const entry of Object.values(state.entries)) {
-      if (entry.messageId) continue;
+    const unsent = Object.values(state.entries).filter(entry => !entry.messageId);
+    while (unsent.length) {
       await exclusive(async () => {
-        if (existing.has(entry.key)) entry.messageId = existing.get(entry.key);
-        else { await wait(); entry.messageId = (await channel.send(payload(entry))).id; }
+        const group = [], embeds = [];
+        let size = 0;
+        while (unsent.length && group.length < 3) {
+          const entry = unsent[0];
+          if (existing.has(entry.key)) { entry.messageId = existing.get(entry.key); unsent.shift(); continue; }
+          const embed = payload(entry).embeds[0];
+          const length = (embed.title?.length || 0) + (embed.description?.length || 0) + (embed.footer?.text?.length || 0) +
+            embed.fields.reduce((sum, f) => sum + f.name.length + f.value.length, 0);
+          if (group.length && size + length > 5800) break;
+          group.push(entry); embeds.push(embed); size += length; unsent.shift();
+        }
+        if (group.length) {
+          await wait();
+          const message = await channel.send({ embeds, allowedMentions: { parse: [] } });
+          for (const entry of group) entry.messageId = message.id;
+        }
         await persist();
       });
     }

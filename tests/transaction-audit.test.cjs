@@ -107,6 +107,10 @@ test('distinct database records without message IDs are retained and never merge
   await audit.record(fromPurchase({ ...purchase, guild_id: guild }, '2026-11-15T16:00:00Z'));
   await audit.record(fromPurchase({ ...purchase, guild_id: guild, id: 18 }, '2026-11-15T16:00:00Z'));
   assert.equal(audit.snapshot().records, 2);
+  await audit.run();
+  assert.equal(f.sent.size, 1);
+  assert.equal([...f.sent.values()][0].embeds.length, 2);
+  assert.equal(audit.snapshot().published, 2);
 });
 test('read-only history import matches human evidence and never invokes source mutation', async () => {
   let saved;
