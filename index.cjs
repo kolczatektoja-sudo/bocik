@@ -8028,6 +8028,14 @@ async function processDiscountCodeRedemption(interaction, inputCode) {
   );
 }
 
+function parseSaleAmount(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^\d+(?:[,.]\d{1,2})?$/.test(text)) return NaN;
+  const [whole, fraction = ""] = text.split(/[,.]/);
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents > 0 ? cents / 100 : NaN;
+}
+
 async function handleModalSubmit(interaction) {
   // Sprawdź czy interakcja już została odpowiedziana
   if (interaction.replied || interaction.deferred) return;
@@ -8044,11 +8052,11 @@ async function handleModalSubmit(interaction) {
   // --- DODAJ ROZLICZENIE (PRZYCISK) ---
   if (id === "modal_rozliczenie_dodaj") {
     const kwotaRaw = interaction.fields.getTextInputValue("kwota_sprzedazy");
-    const kwota = parseInt(kwotaRaw.replace(/[^0-9]/g, ""), 10);
+    const kwota = parseSaleAmount(kwotaRaw);
 
     if (isNaN(kwota) || kwota <= 0) {
       await interaction.reply({
-        content: "> `❌` × Podano nieprawidłową kwotę. Wpisz samą liczbę dodatnią (np. 50).",
+        content: "> `❌` × Podano nieprawidłową kwotę. Wpisz liczbę dodatnią z maksymalnie dwoma miejscami po przecinku (np. 10,50 lub 10.50).",
         flags: [MessageFlags.Ephemeral],
       });
       return;
@@ -10681,7 +10689,7 @@ async function addSaleToSettlement(userId, kwota, guildId) {
   }
 
   const userData = target.get(userId);
-  userData.amount += kwota;
+  userData.amount = (Math.round(userData.amount * 100) + Math.round(kwota * 100)) / 100;
   userData.lastUpdate = Date.now();
   userData.guildId = guildId;
 
@@ -22190,11 +22198,11 @@ async function handleModalSubmit(interaction) {
   if (rawCid === "modal_rozliczenie_dodaj") {
     if (interaction.replied || interaction.deferred) return;
     const kwotaRaw = interaction.fields.getTextInputValue("kwota_sprzedazy");
-    const kwota = parseInt(kwotaRaw.replace(/[^0-9]/g, ""), 10);
+    const kwota = parseSaleAmount(kwotaRaw);
 
     if (isNaN(kwota) || kwota <= 0) {
       await interaction.reply({
-        content: "> `❌` × Podano nieprawidłową kwotę. Wpisz samą liczbę dodatnią (Przykład: 50).",
+        content: "> `❌` × Podano nieprawidłową kwotę. Wpisz liczbę dodatnią z maksymalnie dwoma miejscami po przecinku (np. 10,50 lub 10.50).",
         flags: [MessageFlags.Ephemeral],
       });
       return;
